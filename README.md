@@ -23,7 +23,6 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 ## Inhalt
 
 - [Features](#features)
-- [Security](#security)
 - [BBS-Befehle](#bbs-befehle)
 - [Installation](#installation)
 - [Konfiguration](#konfiguration)
@@ -33,7 +32,7 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 ## Features
 
 ### BBS-Kern
-- **Private Nachrichten** — Postfach je Rufzeichen, konfigurierbares Limit, AES-256-GCM-verschlüsselt at-rest (siehe [Security](#security))
+- **Private Nachrichten** — Postfach je Rufzeichen, konfigurierbares Limit, AES-256-GCM-verschlüsselt at-rest
 - **Board/Bulletins** — öffentliche Nachrichten, sticky-Flag (nie automatisch gelöscht), automatische Aufräumung nach konfigurierbarer Frist
 - **Self-Service-Registrierung** — Nutzer registrieren sich per `add` direkt über den MeshCore-Kanal, kein manuelles Anlegen durch den SysOp nötig
 - **Kontakt-Einladung per QR/Link** — nach der Registrierung schickt die BBS eine `meshcore://contact/add`-URI, die die MeshCore-App direkt als "Kontakt hinzufügen"-Dialog anbietet
@@ -48,7 +47,7 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 ### Web-Admin (HTTPS)
 - Dashboard mit Node-/Serial-Status, Region-Scope-Bestätigung, Nachrichtenstatistik
 - Nutzerverwaltung (registrieren, sperren, Mail-Kontakt setzen)
-- Nachrichtenverwaltung (Board: Volltext + Sticky-Toggle; Privat: nur Metadaten — siehe [Security](#security))
+- Nachrichtenverwaltung (Board: Volltext + Sticky-Toggle; Privat: nur Metadaten)
 - Live-Einstellungen: TX-Power, Path-Hash-Mode, Region-Scope, Kanalname — wirken sofort am Node, kein Neustart nötig
 - Statistik-Dashboard: Nachrichtenaufkommen, Routing-Art (Flood/Direkt/Multihop), SNR-Verlauf je Nutzer
 - Debug-Ansicht mit Live-Journal-Log (journalctl-Anbindung)
@@ -59,38 +58,6 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 - **Region-Scoping** — alle Flood-Pakete (Kanal-Broadcasts, Flood-DMs, Adverts) werden mit einem Region-Code versehen, der auf Repeatern gefiltert werden kann (Firmware ≥ v1.15 für persistenten Default-Scope)
 - **Best-Effort-Multihop-DMs** — Direktnachrichten über bekannte Pfade, automatischer Fallback auf Flood bei ausbleibendem ACK
 - **V3-Protokoll** (3-Byte-Pfad-Header) mit automatischem Downgrade-Schutz bei Node-Neustart
-
-## Security
-
-Dieses Projekt wurde mehrfach gezielt auf Sicherheitsfragen durchleuchtet (Telnet-Schnittstelle, serieller MeshCore-Pfad, Web-Admin). Kurzfassung der Ergebnisse und Maßnahmen:
-
-### Vertraulichkeit privater Nachrichten
-- **At-Rest-Verschlüsselung**: Private Nachrichten (`msg_type='P'`) werden mit AES-256-GCM verschlüsselt in der SQLite-Datenbank gespeichert. Ohne den Schlüssel ist eine gestohlene `bbs.db` oder ein Backup wertlos.
-- **Schlüsselverwaltung**: Der Schlüssel wird bevorzugt aus einem **verschlüsselten systemd-Credential** geladen (`LoadCredentialEncrypted=`, host-gebunden, wird beim Service-Start automatisch entschlüsselt — kein Klartext-Schlüssel liegt dauerhaft auf der Platte). `setup_pi.sh` richtet das bei der Ersteinrichtung automatisch ein. Fallback: Datei außerhalb des Repos oder `secrets.yaml` (nie im Repo, siehe `.gitignore`).
-- **Zugriffskontrolle**: Private Nachrichten dürfen ausschließlich Absender und Empfänger lesen — **auch der SysOp nicht**, weder über den `R`-Befehl noch über das Web-Admin (dort werden nur Metadaten angezeigt, niemals Betreff/Text). Fremde Postfächer sind nicht per Nachrichtennummer-Enumeration auffindbar (identische "nicht gefunden"-Antwort für fremde und nicht existierende IDs).
-- **Grenze**: Schützt gegen gestohlene Datenträger/Backups und den SysOp über die BBS-Oberfläche. Schützt **nicht** gegen Root-Zugriff auf dem laufenden Prozess (der Schlüssel muss zur Laufzeit im Speicher liegen, um zuzustellen).
-
-### Netzwerk-Angriffsflächen
-- **Telnet ist standardmäßig nur auf `127.0.0.1` gebunden** — unauthentifiziert per Design (klassisches BBS-Verhalten), daher bewusst nicht von außen erreichbar. Für LAN-Zugriff kann `telnet.host` explizit geöffnet werden (Konfigurationskommentar warnt davor).
-- **Eingabevalidierung an der Netzwerkgrenze**: Rufzeichen/Benutzernamen (Telnet-Login *und* MeshCore-Kanalregistrierung) folgen derselben strikten Zeichen-Whitelist. Terminal-Escape-Sequenzen (ANSI) und Steuerzeichen werden aus jeder Ausgabe entfernt, bevor sie an andere Nutzer oder ins Log gehen — verhindert Terminal-Injection und Log-Fälschung über Namen/Nachrichtentexte, die aus dem Mesh (RF, potenziell von jedem Node) stammen können.
-- **Zeilenlängenbegrenzung** auf der Telnet-Schnittstelle gegen unbegrenztes Pufferwachstum.
-- **Frame-Parser** (serielles MeshCore-Protokoll) sind vollständig `try/except`-gekapselt mit Längenobergrenzen — degenerierte oder böswillige Pakete führen zum Verwerfen des Frames, nicht zum Absturz.
-
-### Web-Admin
-- HTTPS mit automatisch erzeugtem self-signed Zertifikat (Import eines eigenen Zertifikats möglich)
-- Passwort als gesalzener **scrypt**-Hash (kein Klartext, kein reversibles Hashing)
-- **Rate-Limiting/Lockout** gegen Brute-Force (max. Fehlversuche je IP in Zeitfenster, danach zeitlich begrenzte Sperre; Cache-Obergrenze gegen Speicheraufblähung)
-- **CSRF-Schutz** (Synchronizer-Token-Pattern) für alle zustandsändernden Requests
-- Session-Cookies `Secure` (nur über HTTPS gesendet), zeitlich begrenzte Gültigkeit
-
-### Keine klassischen Injection-Vektoren
-- **SQL**: durchgängig parametrisierte Queries, kein dynamischer SQL-String-Aufbau
-- **Command Injection**: keine Shell-Aufrufe mit Nutzereingaben; die einzigen Subprozessaufrufe (Log-Anzeige, Neustart) verwenden Argumentlisten ohne `shell=True`
-- **Keine** `eval`/`exec`/`pickle`/unsichere Deserialisierung im gesamten mesh-erreichbaren Pfad
-
-### Betreiberdaten getrennt vom Code
-- `config/config.yaml` ist generisch und öffentlich (dieses Repo). Echte Betreiberdaten (Rufzeichen, QTH, Home-Assistant-URL, MeshCore-Kontakte) gehören in eine lokale, per `.gitignore` ausgeschlossene `config/config.local.yaml` (Vorlage: `config.local.yaml.example`).
-- Geheimnisse (Home-Assistant-Token, At-Rest-Schlüssel) ausschließlich in `config/secrets.yaml` (ebenfalls gitignored) bzw. als systemd-Credential — niemals im Repository.
 
 ## BBS-Befehle
 
@@ -237,7 +204,7 @@ Wichtige Optionen in `config/config.yaml` (Details/Kommentare direkt in der Date
 
 | Bereich | Optionen |
 |---|---|
-| `telnet` | `enabled`, `host` (Default `127.0.0.1` — siehe [Security](#security)), `port` |
+| `telnet` | `enabled`, `host` (Default `127.0.0.1`, unauthentifiziert per Design), `port` |
 | `web` | `enabled`, `host`, `port`, `tls.*` (HTTPS-Zertifikat) |
 | `meshcore` | `serial_port`, `baud_rate`, `channel`, `channel_name`, `channel_region`, `tx_power`, `path_hash_mode`, `contacts` |
 | `storage` | `path` (SQLite-Datei) |
