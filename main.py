@@ -8,7 +8,6 @@ import yaml
 
 from core import crypto
 from storage.database import Database
-from protocols.telnet.server import TelnetServer
 from protocols.meshcore.server import MeshCoreServer
 from protocols.web.server import WebAdminServer, WEBCONFIG_PATH
 
@@ -173,23 +172,15 @@ async def main():
 
         servers = []
 
-        # MeshCore zuerst konstruieren (falls aktiv): liefert den notify_dm-Callback
-        # fuer proaktive DM-Benachrichtigungen (neue Nachricht / Loesch-Erinnerung),
-        # der auch dem Telnet-Server mitgegeben wird - so werden MeshCore-registrierte
-        # Empfaenger benachrichtigt, unabhaengig davon, ueber welches Protokoll die
-        # Nachricht gesendet wurde.
         meshcore = None
         if config.get("meshcore", {}).get("enabled", False):
             meshcore = MeshCoreServer(db, config)
             await meshcore.start()
             servers.append(meshcore)
 
+        # notify_dm fuer proaktive DM-Benachrichtigungen (neue Nachricht /
+        # Loesch-Erinnerung), siehe _unread_message_retention_loop unten.
         notify_dm = meshcore.notify_dm if meshcore else None
-
-        if config.get("telnet", {}).get("enabled", True):
-            telnet = TelnetServer(db, config, notify_dm=notify_dm)
-            await telnet.start()
-            servers.append(telnet)
 
         if config.get("web", {}).get("enabled", False):
             web_admin = WebAdminServer(db, config, meshcore=meshcore)

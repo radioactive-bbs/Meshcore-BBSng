@@ -1,8 +1,5 @@
-"""Gemeinsame Validierung von Benutzernamen / Rufzeichen.
-
-Eine einzige Regel fuer BEIDE Anmeldewege, damit sie nicht auseinanderlaufen:
-  - Self-Service-Registrierung ueber den MeshCore-Kanal ('add')
-  - Telnet-Login
+"""Validierung von Benutzernamen / Rufzeichen fuer die Self-Service-Registrierung
+ueber den MeshCore-Kanal ('add').
 
 Erlaubt: 3-16 Zeichen aus Buchstaben, Ziffern und +-.!"§$%&/()=.
 Bewusst NICHT erlaubt: Leerzeichen, Steuerzeichen, ESC (ANSI), sowie ;|<>*`` –

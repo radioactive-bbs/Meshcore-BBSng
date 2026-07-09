@@ -6,13 +6,6 @@ locator: ""
 # Betreiberdaten (Rufzeichen, QTH, ...) gehoeren NICHT hierher, sondern in
 # config/config.local.yaml (gitignored) – siehe config.local.yaml.example.
 
-telnet:
-  enabled: true
-  host: "127.0.0.1"             # Telnet ist unauthentifiziert – nur lokal binden.
-                                # Fuer LAN-Zugriff bewusst auf "0.0.0.0" setzen und per
-                                # Firewall absichern (jeder kann sonst jedes Call spoofen).
-  port: 6300
-
 web:                            # Management-Weboberflaeche (SysOp)
   enabled: true
   host: "0.0.0.0"               # Im LAN erreichbar; Absicherung ueber TLS (siehe web.tls unten).

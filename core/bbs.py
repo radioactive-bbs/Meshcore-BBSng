@@ -11,9 +11,9 @@ from storage.database import Database
 logger = logging.getLogger(__name__)
 
 # Signatur: async def notify_dm(to_call: str, text: str) -> bool
-# Versucht, dem angegebenen Rufzeichen eine DM zuzustellen (z.B. per MeshCore).
-# Gibt False zurueck, wenn der Empfaenger nicht erreichbar ist (z.B. reiner
-# Telnet-User ohne Mesh-Kontakt) - kein Fehler, nur "konnte nicht benachrichtigen".
+# Versucht, dem angegebenen Rufzeichen per MeshCore-DM zuzustellen. Gibt False
+# zurueck, wenn der Name nicht als MeshCore-Kontakt registriert ist (z.B. Tippfehler
+# oder noch nicht registrierter Empfaenger) - kein Fehler, nur "konnte nicht benachrichtigen".
 NotifyDM = Callable[[str, str], Awaitable[bool]]
 
 # Einfache Mail-Validierung fuer den MC-Befehl (aus dem Mesh, angreiferkontrolliert):

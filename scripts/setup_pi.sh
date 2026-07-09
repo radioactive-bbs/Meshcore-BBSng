@@ -235,7 +235,7 @@ fi
 info "systemd-Service einrichten..."
 sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<EOF
 [Unit]
-Description=Meshcore BBSng MeshCore/Telnet BBS
+Description=Meshcore BBSng MeshCore BBS
 After=network-online.target
 Wants=network-online.target
 

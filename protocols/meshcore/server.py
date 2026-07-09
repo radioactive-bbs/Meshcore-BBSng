@@ -66,7 +66,7 @@ from storage.database import Database
 logger = logging.getLogger(__name__)
 
 NODE_TIMEOUT    = 600   # Sekunden bis Node als "offline" gilt
-_USER_RE = USERNAME_RE  # gemeinsame Regel mit dem Telnet-Login, siehe core/validation.py
+_USER_RE = USERNAME_RE  # siehe core/validation.py
 MAX_MSG_LEN     = 150   # Firmware-Limit: max 150 Zeichen pro Paket
 CONFIRM_TIMEOUT = 30.0  # Fallback-Sekunden, falls Node kein est_timeout liefert
 CONFIRM_FLOOR   = 15.0  # Mindest-Wartezeit auf ACK
@@ -185,7 +185,7 @@ class MeshCoreServer(BaseProtocol):
     async def start(self):
         """Startet den Server. Ist der Companion beim ersten Versuch nicht erreichbar
         (z.B. Dev/QA-Instanz ohne angeschlossene Hardware), blockiert das NICHT den
-        restlichen BBS-Start (Telnet/Web-Admin) – der Reconnect laeuft im Hintergrund
+        restlichen BBS-Start (Web-Admin) – der Reconnect laeuft im Hintergrund
         und die Runtime-Loops starten automatisch, sobald der Companion verfuegbar ist."""
         self._running = True
         try:
@@ -365,7 +365,7 @@ class MeshCoreServer(BaseProtocol):
         """Sendet eine DM an einen registrierten User (per Name/Rufzeichen), falls
         bekannt. Gemeinsame Grundlage fuer SysOp-DMs und automatische Benachrichtigungen
         (neue Nachricht / Loesch-Erinnerung). Gibt False zurueck, wenn der Name nicht
-        als MeshCore-Kontakt registriert ist (z.B. reiner Telnet-User ohne Mesh-Zugang)."""
+        als MeshCore-Kontakt registriert ist (z.B. Tippfehler oder unregistrierter Name)."""
         found = await self.db.find_mc_contact_by_name(name)
         if not found:
             return False

@@ -61,7 +61,6 @@ SETTINGS_SPEC = [
     ("max_msg_len",    ("meshcore", "max_message_length"), "Max. Zeichen/Paket",      int,   50,   150,  False),
     ("chunk_delay",    ("meshcore", "chunk_delay"),        "Chunk-Pause (s)",         float, 0.5,  10.0, False),
     ("max_chunks",     ("meshcore", "max_chunks"),         "Max. Pakete/Antwort",     int,   1,    10,   False),
-    ("telnet_port",    ("telnet", "port"),                 "Telnet-Port",             int,   1024, 65535, False),
     ("retention_days", ("board", "retention_days"),        "Board: Aufbewahrung (Tage)", int, 1,    365,  False),
     ("max_personal",   ("messages", "max_personal"),       "Nachrichten: Max. privates Postfach", int, 1, 500, True),
     ("unread_retention_days", ("messages", "unread_retention_days"),
@@ -962,14 +961,6 @@ class WebAdminServer(BaseProtocol):
                       f"<th>Pfad</th><th>Mail</th><th></th></tr>{''.join(rows)}</table>"
                       if rows else "<p>Keine registrierten MeshCore-User.</p>")
 
-        tusers = await self.db.get_all_users()
-        trows = "".join(f"<tr><td><b>{_esc(u['callsign'])}</b></td><td>{_esc(u['name'])}</td>"
-                        f"<td>{_fmt_ts(u['last_seen'])}</td><td>{u['message_count']}</td></tr>"
-                        for u in tusers)
-        telnet_table = (f"<table><tr><th>Rufzeichen</th><th>Name</th><th>Zuletzt aktiv</th>"
-                        f"<th>Nachrichten</th></tr>{trows}</table>"
-                        if trows else "<p>Keine Telnet-User.</p>")
-
         blocked = await self.db.get_blocked()
         brows = "".join(f"""<tr><td><b>{_esc(b['name']) or '-'}</b></td>
               <td class='mono'>{_esc(b['pubkey'][:16])}…</td>
@@ -999,7 +990,7 @@ class WebAdminServer(BaseProtocol):
           <input name="reason" placeholder="Grund (optional)" maxlength="60">
           <button class="danger">Sperren</button>
         </form>
-        <h2>Telnet-User ({len(tusers)})</h2>{telnet_table}"""
+        """
         return self._page(request, "Benutzer", "/users", body)
 
     async def do_user_add(self, request: web.Request) -> web.Response:

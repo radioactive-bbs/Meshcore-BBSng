@@ -5,7 +5,6 @@ from typing import List, Optional
 
 from core import crypto
 from core.message import Message
-from core.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -83,14 +82,6 @@ class Database:
         except Exception as exc:
             if "duplicate column" not in str(exc).lower():
                 logger.error("Schema-Migration fehlgeschlagen: %s", exc, exc_info=True)
-        await self._db.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                callsign        TEXT PRIMARY KEY,
-                name            TEXT DEFAULT '',
-                last_seen       TEXT,
-                message_count   INTEGER DEFAULT 0
-            )
-        """)
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS events (
                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -252,32 +243,6 @@ class Database:
         await self._db.commit()
         return cursor.rowcount
 
-    async def get_or_create_user(self, callsign: str) -> User:
-        callsign = callsign.upper()
-        cursor = await self._db.execute("SELECT * FROM users WHERE callsign = ?", (callsign,))
-        row = await cursor.fetchone()
-        if row:
-            return User(
-                callsign=row["callsign"],
-                name=row["name"],
-                last_seen=datetime.fromisoformat(row["last_seen"]) if row["last_seen"] else None,
-                message_count=row["message_count"],
-            )
-        user = User(callsign=callsign)
-        await self._db.execute(
-            "INSERT INTO users (callsign, last_seen) VALUES (?, ?)",
-            (callsign, datetime.utcnow().isoformat()),
-        )
-        await self._db.commit()
-        return user
-
-    async def update_user(self, user: User):
-        await self._db.execute(
-            "UPDATE users SET name = ?, last_seen = ?, message_count = ? WHERE callsign = ?",
-            (user.name, datetime.utcnow().isoformat(), user.message_count, user.callsign),
-        )
-        await self._db.commit()
-
     async def load_mc_contacts(self) -> list[tuple[str, str]]:
         cursor = await self._db.execute("SELECT pubkey, name FROM mc_contacts")
         return [(r["pubkey"], r["name"]) for r in await cursor.fetchall()]
@@ -339,13 +304,6 @@ class Database:
         """Alle registrierten MeshCore-User mit allen Feldern (fuer Web-Admin)."""
         cursor = await self._db.execute(
             "SELECT pubkey, name, added_at, mail FROM mc_contacts ORDER BY name"
-        )
-        return [dict(r) for r in await cursor.fetchall()]
-
-    async def get_all_users(self) -> list[dict]:
-        """Alle BBS-User (Telnet) mit letztem Login und Nachrichtenzahl (fuer Web-Admin)."""
-        cursor = await self._db.execute(
-            "SELECT callsign, name, last_seen, message_count FROM users ORDER BY callsign"
         )
         return [dict(r) for r in await cursor.fetchall()]
 

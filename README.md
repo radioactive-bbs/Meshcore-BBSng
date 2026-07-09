@@ -1,6 +1,6 @@
 # Meshcore BBSng
 
-Ein Bulletin-Board-System (BBS) für [MeshCore](https://meshcore.co.uk/)-Mesh-Netzwerke — erreichbar per Telnet und über das MeshCore-Funknetz (Kanal-Broadcast + Direktnachrichten), mit einer eigenen HTTPS-Web-Admin-Oberfläche zur Verwaltung.
+Ein Bulletin-Board-System (BBS) für [MeshCore](https://meshcore.io/)-Mesh-Netzwerke — erreichbar über das MeshCore-Funknetz (Kanal-Broadcast + Direktnachrichten), mit einer eigenen HTTPS-Web-Admin-Oberfläche zur Verwaltung.
 
 Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) auf moderner MeshCore-LoRa-Hardware.
 
@@ -41,8 +41,7 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 - **PING/Traceroute** — Pfad- und Laufzeitmessung zu einzelnen Nodes/Repeatern im Mesh, mit automatischem Retry bei Paketverlust
 - **Feature-Flags** — jede Funktionsgruppe (Nachrichten, Board, Wetter, Sysinfo, Online-Liste, Userliste, PING, Account, Self-Service) einzeln im Web-Admin abschaltbar, wirkt sofort ohne Neustart
 
-### Zwei Zugangswege
-- **Telnet** (lokal, unauthentifiziert) — klassisches Terminal-BBS-Erlebnis für den SysOp/lokale Nutzung
+### Zugangsweg
 - **MeshCore-Funknetz** — Kanal-Broadcasts (öffentlich) und Direktnachrichten (privat) über das serielle Companion-Protokoll eines angeschlossenen MeshCore-Node (z. B. Heltec WiFi LoRa 32)
 
 ### Web-Admin (HTTPS)
@@ -62,18 +61,18 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 
 ## BBS-Befehle
 
-Die Befehle sind über **Telnet** und den **MeshCore-Kanal/DM** weitgehend identisch, mit ein paar plattformbedingten Unterschieden (siehe Fußnoten). Groß-/Kleinschreibung ist egal.
+Alle Befehle laufen über den MeshCore-Kanal (Broadcast) bzw. Direktnachrichten. Groß-/Kleinschreibung ist egal.
 
 ### Navigation (zeigt Untermenü)
 
 | Befehl | Bedeutung |
 |---|---|
 | `H` / `?` | Hauptmenü |
-| `N` | Nachrichten-Menü *(nur MeshCore — bei Telnet ist `N` "Namen setzen", siehe unten)* |
+| `N` | Nachrichten-Menü |
 | `B` | Board-Menü |
-| `W` | Wetter-Menü *(nur MeshCore — bei Telnet ist `W` "wer ist online")* |
+| `W` | Wetter-Menü |
 | `I` | Info-Menü |
-| `A` | Account-Menü *(nur MeshCore)* |
+| `A` | Account-Menü |
 
 ### Nachrichten & Board
 
@@ -84,7 +83,7 @@ Die Befehle sind über **Telnet** und den **MeshCore-Kanal/DM** weitgehend ident
 | `BL` | Board-Liste (Sticky zuerst) |
 | `BLO <n>` | Weitere Board-Einträge ab Position `n` |
 | `R <nr>` | Nachricht/Board-Eintrag `<nr>` lesen |
-| `S TO\|Betreff\|Text` | Private Nachricht senden (Telnet: interaktiver Dialog mit `/EX` zum Absenden, `/ABORT` zum Abbrechen) |
+| `S TO\|Betreff\|Text` | Private Nachricht senden |
 | `SB Thema\|Text` | Board-Nachricht (Bulletin) veröffentlichen |
 | `K <nr>` | Eigene Nachricht `<nr>` löschen |
 
@@ -101,15 +100,13 @@ Die Befehle sind über **Telnet** und den **MeshCore-Kanal/DM** weitgehend ident
 | Befehl | Bedeutung |
 |---|---|
 | `SI` | Sysinfo (Nutzerzahl, Nachrichten, aktive Sessions) |
-| `O` | Wer ist gerade online/aktiv *(Telnet: `W`)* |
+| `O` | Wer ist gerade online/aktiv |
 | `LU` | Liste aller registrierten Nutzer |
-| `PING` | Liste bekannter Repeater *(nur MeshCore)* |
-| `PING <Name>` | Traceroute zu einem Node/Repeater — Pfad, Laufzeit, SNR je Hop *(nur MeshCore)* |
-| `MI` | Eigene Account-Info *(nur MeshCore)* |
-| `MC <mail>` | Mail-Kontaktadresse hinterlegen, z. B. `MC name@example.com` *(nur MeshCore)* |
-| `REMOVE` | Eigene Registrierung löschen (nur per Direktnachricht) *(nur MeshCore)* |
-| `B` / `BYE` / `Q` / `QUIT` | Verbindung trennen *(nur Telnet)* |
-| `N <Name>` | Eigenen Anzeigenamen setzen *(nur Telnet)* |
+| `PING` | Liste bekannter Repeater |
+| `PING <Name>` | Traceroute zu einem Node/Repeater — Pfad, Laufzeit, SNR je Hop |
+| `MI` | Eigene Account-Info |
+| `MC <mail>` | Mail-Kontaktadresse hinterlegen, z. B. `MC name@example.com` |
+| `REMOVE` | Eigene Registrierung löschen (nur per Direktnachricht) |
 
 ### Self-Service-Registrierung (nur MeshCore-Kanal)
 
@@ -165,7 +162,7 @@ sudo systemctl start nnp-bbs
 journalctl -fu nnp-bbs
 ```
 
-Web-Admin danach erreichbar unter `https://<Server-IP>:8080` (self-signed Zertifikat, Browser-Warnung beim ersten Zugriff bestätigen). Telnet lokal unter `localhost:6300`.
+Web-Admin danach erreichbar unter `https://<Server-IP>:8080` (self-signed Zertifikat, Browser-Warnung beim ersten Zugriff bestätigen).
 
 ### Manuelle Installation (ohne `setup_pi.sh`)
 
@@ -205,7 +202,6 @@ Wichtige Optionen in `config/config.yaml` (Details/Kommentare direkt in der Date
 
 | Bereich | Optionen |
 |---|---|
-| `telnet` | `enabled`, `host` (Default `127.0.0.1`, unauthentifiziert per Design), `port` |
 | `web` | `enabled`, `host`, `port`, `tls.*` (HTTPS-Zertifikat) |
 | `meshcore` | `serial_port`, `baud_rate`, `channel`, `channel_name`, `channel_region`, `tx_power`, `path_hash_mode`, `contacts` |
 | `storage` | `path` (SQLite-Datei) |
@@ -221,14 +217,12 @@ Viele Optionen (TX-Power, Path-Hash-Mode, Region-Scope, Kanalname, Feature-Flags
 main.py                    Einstiegspunkt, Config-Merge, Service-Start
 core/
   bbs.py                   BBS-Logik: Befehle, Menues, Feature-Flags
-  session.py                Telnet-Session-State-Machine
   crypto.py                  At-Rest-Verschluesselung, Passwort-Hashing
-  validation.py               gemeinsame Rufzeichen/Namen-Validierung
-  sanitize.py                  Terminal-/Log-Ausgabe-Bereinigung
+  validation.py               Rufzeichen/Namen-Validierung
+  sanitize.py                  Log-Ausgabe-Bereinigung
   weather.py                    Home-Assistant-Wetter-Client
   webtls.py                      Self-signed-Zertifikat-Erzeugung
 protocols/
-  telnet/server.py           Telnet-Server (RFC-854-Negotiation)
   meshcore/
     server.py                 MeshCore-Companion-Protokoll, Frame-Dispatch
     packet.py                  Frame-Encoding/-Parsing, Kommando-Konstruktoren
