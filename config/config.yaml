@@ -1,0 +1,63 @@
+callsign: "N0CALL"
+sysop: "N0CALL"
+sysop_mail: ""
+qth: ""
+locator: ""
+# Betreiberdaten (Rufzeichen, QTH, ...) gehoeren NICHT hierher, sondern in
+# config/config.local.yaml (gitignored) – siehe config.local.yaml.example.
+
+telnet:
+  enabled: true
+  host: "127.0.0.1"             # Telnet ist unauthentifiziert – nur lokal binden.
+                                # Fuer LAN-Zugriff bewusst auf "0.0.0.0" setzen und per
+                                # Firewall absichern (jeder kann sonst jedes Call spoofen).
+  port: 6300
+
+web:                            # Management-Weboberflaeche (SysOp)
+  enabled: true
+  host: "0.0.0.0"               # Im LAN erreichbar; Absicherung ueber TLS (siehe web.tls unten).
+  port: 8080                    # Zugriff dann per https://<Server-IP>:8080
+  secure_cookie: true           # Session-Cookie nur ueber HTTPS senden (passt zu tls.enabled).
+                                # Auch bei TLS-terminierendem Reverse-Proxy true lassen.
+  tls:
+    enabled: true               # HTTPS direkt im Server (kein Proxy noetig).
+    cert_file: "data/web-cert.pem"   # Fehlt das Paar, wird beim Start ein self-signed Zertifikat
+    key_file: "data/web-key.pem"     # erzeugt. Eigenes Zert importierbar: Einstellungen -> HTTPS/TLS.
+  # Passwort: NICHT hier im Klartext. Wird als scrypt-Hash in config/webconfig.yaml
+  # gesetzt – per scripts/set_web_password.py oder in der Web-UI (Einstellungen).
+  # Ohne gesetztes Passwort erzeugt der erste Start ein Zufallspasswort und legt es in
+  # data/initial-web-password.txt (0600) ab.
+
+storage:
+  path: "data/bbs.db"
+
+board:
+  retention_days: 14           # Board-Nachrichten aelter als N Tage werden automatisch geloescht (sticky ausgenommen)
+
+messages:
+  max_personal: 30             # Max. private Nachrichten je Postfach (Empfaenger). Bestehende Nachrichten
+                                # bleiben bei Reduzierung erhalten, S/SP lehnt aber ab bis unter dem Limit
+
+meshcore:
+  enabled: true
+  serial_port: "/dev/meshcore"
+  baud_rate: 115200
+  channel: 0                    # Index des BBS-Channels am Node (anpassen falls noetig)
+  channel_name: "#bbs-example"  # in config.local.yaml auf den echten Kanalnamen setzen
+  channel_region: ""            # Region-Scope fuer ALLE Flood-Pakete (Channel-Broadcasts, Flood-DMs,
+                                # Adverts): Key = SHA256("#"+name)[:16]. Nur Kleinbuchstaben/Ziffern/-,
+                                # max 29 Zeichen. Leer = unscoped. Live aenderbar im Web-Admin.
+                                # Default-Scope-Persistenz am Node braucht Firmware v1.15+.
+  tx_power: 22                  # LoRa-Sendeleistung in dBm (-9..22, Heltec V4 max 22); Bandplan/ERP beachten
+  path_hash_mode: 2             # Default Path Hash Size: OTA-Sende-Header pro Hop. 0=1B, 1=2B, 2=3B
+  max_message_length: 200       # Max. Zeichen pro MeshCore-Paket
+  chunk_delay: 2.0              # Sekunden Pause zwischen Chunks
+  max_chunks: 5                 # Max. Pakete pro Antwort
+  contacts: []                  # eigene Kontakte (Pubkey/Name) in config.local.yaml eintragen
+
+homeassistant:
+  url: ""                       # eigene HA-URL in config.local.yaml eintragen
+  # token: in config/secrets.yaml (nicht im Repo)
+  verify_ssl: true              # TLS-Zertifikat pruefen (schuetzt den HA-Token vor MITM).
+                                # Bei internem/self-signed Zertifikat: Pfad zur CA-Datei
+                                # angeben (z.B. "/etc/ssl/certs/meine-ca.pem") statt false.

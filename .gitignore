@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+*.env
+
+# BBS-Daten (SQLite-Datenbank)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets (nie ins Repo!)
+config/secrets.yaml
+config/secrets.local.yaml
+.env
+*.env.local
+
+# Betreiberdaten (Rufzeichen, QTH, HA-URL, MeshCore-Kontakte/Kanal, ...).
+# config.yaml bleibt generisch/oeffentlich; echte Werte kommen hier rein.
+config/config.local.yaml
+
+# TLS-Zertifikate/Keys der Web-Admin-Oberflaeche (self-signed oder importiert)
+*.pem
+*.key
+*.crt
+
+# Logs
+*.log
+
+# Web-Admin Overlay (lokale Einstellungen der UI)
+config/webconfig.yaml

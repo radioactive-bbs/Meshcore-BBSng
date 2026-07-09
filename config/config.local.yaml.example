@@ -1,0 +1,31 @@
+# Betreiberdaten der eigenen NNP-BBS-Instanz.
+#
+# Kopieren nach config/config.local.yaml und mit echten Werten fuellen:
+#   cp config/config.local.yaml.example config/config.local.yaml
+#
+# config.local.yaml ist in .gitignore eingetragen und wird NIE committet. So
+# bleibt config/config.yaml generisch/oeffentlich (fuer GitHub), waehrend die
+# eigene Identitaet (Rufzeichen, QTH, Homeassistant-URL, MeshCore-Kanal/-Kontakte)
+# ausschliesslich lokal bzw. auf dem Server liegt.
+#
+# Ladereihenfolge (main.py): config.yaml -> config.local.yaml -> webconfig.yaml
+# (Web-Admin-Einstellungen) -> secrets.yaml. Spaetere Dateien ueberschreiben
+# frueheren gleichnamige Keys. Nur die hier tatsaechlich gesetzten Keys werden
+# ueberschrieben - alles Weggelassene bleibt beim generischen Default aus
+# config.yaml.
+
+callsign: "DEIN-CALL"
+sysop: "DEIN-CALL"
+sysop_mail: "deine@mail.de"
+qth: "Deine Stadt"
+locator: "AB12cd"
+
+meshcore:
+  channel_name: "#bbs-deinort"
+  channel_region: "de-xx-yy"     # frei waehlbar, siehe MeshCore-Doku zu Region-Scope
+  contacts:
+    - pubkey: "64-stelliger-hex-pubkey-deines-eigenen-node-kontakts"
+      name: "DEIN-CALL"
+
+homeassistant:
+  url: "https://homeassistant.example.com"
