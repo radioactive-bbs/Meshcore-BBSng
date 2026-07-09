@@ -82,6 +82,42 @@ async def _board_purge_loop(db: Database, config: dict):
         await asyncio.sleep(6 * 3600)
 
 
+UNREAD_WARN_DAYS = 3   # Vorlauf der Loesch-Erinnerung (fix, nicht konfigurierbar)
+
+
+async def _unread_message_retention_loop(db: Database, config: dict, notify_dm):
+    """Ungelesene private Nachrichten: UNREAD_WARN_DAYS vor Ablauf der
+    Aufbewahrungsfrist (messages.unread_retention_days) eine Erinnerungs-DM an
+    den Empfaenger senden (einmalig, per warned-Flag), danach bei Ablauf loeschen.
+    Liest die Frist bei jedem Lauf neu aus config (Web-Admin, ohne Neustart)."""
+    while True:
+        retention_days = config.get("messages", {}).get("unread_retention_days", 30)
+        try:
+            expiring = await db.get_unwarned_expiring_messages(retention_days, UNREAD_WARN_DAYS)
+            for msg in expiring:
+                if notify_dm:
+                    text = (f"⏰ Nachricht #{msg.id} von {msg.from_call} "
+                            f"(\"{msg.subject}\") wird in {UNREAD_WARN_DAYS} Tagen geloescht, "
+                            f"falls nicht gelesen. R{msg.id} zum Lesen.")
+                    try:
+                        await notify_dm(msg.to_call, text)
+                    except Exception:
+                        logger.warning("Loesch-Erinnerung an %s fehlgeschlagen", msg.to_call,
+                                       exc_info=True)
+                await db.mark_warned(msg.id)
+            if expiring:
+                logger.info("Loesch-Erinnerung an %d ungelesene Nachricht(en) verschickt",
+                            len(expiring))
+
+            deleted = await db.purge_expired_unread_messages(retention_days)
+            if deleted:
+                logger.info("Ungelesene Nachrichten bereinigt: %d aelter als %d Tage geloescht",
+                            deleted, retention_days)
+        except Exception:
+            logger.exception("Ungelesene-Nachrichten-Bereinigung fehlgeschlagen")
+        await asyncio.sleep(6 * 3600)
+
+
 async def main():
     with open("config/config.yaml", "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
@@ -137,16 +173,23 @@ async def main():
 
         servers = []
 
-        if config.get("telnet", {}).get("enabled", True):
-            telnet = TelnetServer(db, config)
-            await telnet.start()
-            servers.append(telnet)
-
+        # MeshCore zuerst konstruieren (falls aktiv): liefert den notify_dm-Callback
+        # fuer proaktive DM-Benachrichtigungen (neue Nachricht / Loesch-Erinnerung),
+        # der auch dem Telnet-Server mitgegeben wird - so werden MeshCore-registrierte
+        # Empfaenger benachrichtigt, unabhaengig davon, ueber welches Protokoll die
+        # Nachricht gesendet wurde.
         meshcore = None
         if config.get("meshcore", {}).get("enabled", False):
             meshcore = MeshCoreServer(db, config)
             await meshcore.start()
             servers.append(meshcore)
+
+        notify_dm = meshcore.notify_dm if meshcore else None
+
+        if config.get("telnet", {}).get("enabled", True):
+            telnet = TelnetServer(db, config, notify_dm=notify_dm)
+            await telnet.start()
+            servers.append(telnet)
 
         if config.get("web", {}).get("enabled", False):
             web_admin = WebAdminServer(db, config, meshcore=meshcore)
@@ -154,6 +197,8 @@ async def main():
             servers.append(web_admin)
 
         purge_task = asyncio.create_task(_board_purge_loop(db, config))
+        unread_retention_task = asyncio.create_task(
+            _unread_message_retention_loop(db, config, notify_dm))
 
         logger.info("Meshcore BBSng gestartet. CTRL-C zum Beenden.")
 
@@ -177,10 +222,12 @@ async def main():
         finally:
             logger.info("Fahre herunter...")
             purge_task.cancel()
-            try:
-                await purge_task
-            except asyncio.CancelledError:
-                pass
+            unread_retention_task.cancel()
+            for task in (purge_task, unread_retention_task):
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
             for server in servers:
                 await server.stop()
     finally:

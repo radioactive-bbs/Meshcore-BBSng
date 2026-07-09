@@ -75,6 +75,14 @@ class Database:
         except Exception as exc:
             if "duplicate column" not in str(exc).lower():
                 logger.error("Schema-Migration fehlgeschlagen: %s", exc, exc_info=True)
+        # migration for existing DBs without warned column (Loesch-Erinnerung gesendet?)
+        try:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN warned INTEGER DEFAULT 0")
+            await self._db.commit()
+            logger.debug("Schema-Migration: warned-Spalte zu messages hinzugefuegt")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                logger.error("Schema-Migration fehlgeschlagen: %s", exc, exc_info=True)
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 callsign        TEXT PRIMARY KEY,
@@ -213,6 +221,33 @@ class Database:
             "DELETE FROM messages WHERE msg_type = 'B' AND sticky = 0 "
             "AND created_at < datetime('now', ?)",
             (f"-{days} days",),
+        )
+        await self._db.commit()
+        return cursor.rowcount
+
+    async def get_unwarned_expiring_messages(self, retention_days: int, warn_days: int) -> List[Message]:
+        """Ungelesene private Nachrichten ('P'), die die Loesch-Erinnerung noch nicht
+        bekommen haben und deren Alter die Warnschwelle (retention_days - warn_days)
+        erreicht hat. warned wird von markiere_warned() gesetzt, damit die Erinnerung
+        nur einmal pro Nachricht verschickt wird."""
+        cursor = await self._db.execute(
+            "SELECT * FROM messages WHERE msg_type = 'P' AND read = 0 AND warned = 0 "
+            "AND created_at < datetime('now', ?)",
+            (f"-{retention_days - warn_days} days",),
+        )
+        return [self._row_to_message(r) for r in await cursor.fetchall()]
+
+    async def mark_warned(self, msg_id: int):
+        await self._db.execute("UPDATE messages SET warned = 1 WHERE id = ?", (msg_id,))
+        await self._db.commit()
+
+    async def purge_expired_unread_messages(self, retention_days: int) -> int:
+        """Loescht ungelesene private Nachrichten ('P') aelter als retention_days.
+        Gibt die Anzahl geloeschter Nachrichten zurueck."""
+        cursor = await self._db.execute(
+            "DELETE FROM messages WHERE msg_type = 'P' AND read = 0 "
+            "AND created_at < datetime('now', ?)",
+            (f"-{retention_days} days",),
         )
         await self._db.commit()
         return cursor.rowcount

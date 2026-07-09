@@ -37,6 +37,9 @@ board:
 messages:
   max_personal: 30             # Max. private Nachrichten je Postfach (Empfaenger). Bestehende Nachrichten
                                 # bleiben bei Reduzierung erhalten, S/SP lehnt aber ab bis unter dem Limit
+  unread_retention_days: 30    # Ungelesene private Nachrichten werden nach dieser Frist geloescht.
+                                # 3 Tage vorher bekommt der Empfaenger automatisch eine Erinnerungs-DM
+                                # (nur MeshCore-registrierte Empfaenger erreichbar).
 
 meshcore:
   enabled: true

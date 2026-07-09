@@ -64,6 +64,8 @@ SETTINGS_SPEC = [
     ("telnet_port",    ("telnet", "port"),                 "Telnet-Port",             int,   1024, 65535, False),
     ("retention_days", ("board", "retention_days"),        "Board: Aufbewahrung (Tage)", int, 1,    365,  False),
     ("max_personal",   ("messages", "max_personal"),       "Nachrichten: Max. privates Postfach", int, 1, 500, True),
+    ("unread_retention_days", ("messages", "unread_retention_days"),
+                                                            "Nachrichten: Loeschfrist ungelesen (Tage)", int, 4, 365, True),
 ]
 
 ADV_TYPES = {1: "Client", 2: "Repeater", 3: "Room", 4: "Sensor"}

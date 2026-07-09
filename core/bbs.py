@@ -1,11 +1,20 @@
+import logging
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from core.message import Message
 from core.weather import fetch_forecast_1day, fetch_forecast_3days, fetch_weather
 from core import sanitize
 from storage.database import Database
+
+logger = logging.getLogger(__name__)
+
+# Signatur: async def notify_dm(to_call: str, text: str) -> bool
+# Versucht, dem angegebenen Rufzeichen eine DM zuzustellen (z.B. per MeshCore).
+# Gibt False zurueck, wenn der Empfaenger nicht erreichbar ist (z.B. reiner
+# Telnet-User ohne Mesh-Kontakt) - kein Fehler, nur "konnte nicht benachrichtigen".
+NotifyDM = Callable[[str, str], Awaitable[bool]]
 
 # Einfache Mail-Validierung fuer den MC-Befehl (aus dem Mesh, angreiferkontrolliert):
 # ein @, kein Whitespace/Steuerzeichen, plausible Laenge. Kein RFC-5322-Anspruch.
@@ -34,9 +43,23 @@ class BBSCore:
     PAGE_SIZE = 10
     DEFAULT_MAX_PERSONAL_MESSAGES = 30   # Fallback falls messages.max_personal nicht konfiguriert ist
 
-    def __init__(self, db: Database, config: dict):
+    def __init__(self, db: Database, config: dict, notify_dm: Optional[NotifyDM] = None):
         self.db = db
         self.config = config
+        # Optionaler Callback fuer proaktive DM-Benachrichtigungen (neue Nachricht,
+        # Loesch-Erinnerung). None, wenn kein Protokoll mit Push-Faehigkeit (MeshCore)
+        # verfuegbar ist - Feature bleibt dann einfach inaktiv, kein Fehler.
+        self._notify_dm = notify_dm
+
+    async def _try_notify(self, to_call: str, text: str):
+        """Best-effort-Benachrichtigung: Fehler/fehlender Callback duerfen den
+        eigentlichen BBS-Vorgang (Nachricht speichern etc.) nie verhindern."""
+        if not self._notify_dm:
+            return
+        try:
+            await self._notify_dm(to_call, text)
+        except Exception:
+            logger.warning("Benachrichtigung an %s fehlgeschlagen", to_call, exc_info=True)
 
     def feature_enabled(self, key: str) -> bool:
         """Liest Feature-Flags live aus der Config (Web-UI schaltet ohne Neustart)."""
@@ -265,6 +288,10 @@ class BBSCore:
             created_at=datetime.utcnow(),
         )
         msg_id = await self.db.save_message(msg)
+        await self._try_notify(
+            to_call,
+            f"\U0001f4e8 Neue Nachricht #{msg_id} von {from_call.upper()}: {subject}\n"
+            f"NL zum Anzeigen, R{msg_id} zum Lesen")
         return [f"Msg #{msg_id} an {to_call} gespeichert. 73!"]
 
     async def cmd_bulletin(self, from_call: str, topic: str, body: str) -> list[str]:

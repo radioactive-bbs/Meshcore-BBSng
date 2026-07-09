@@ -33,6 +33,7 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 
 ### BBS-Kern
 - **Private Nachrichten** — Postfach je Rufzeichen, konfigurierbares Limit, AES-256-GCM-verschlüsselt at-rest
+- **Proaktive DM-Benachrichtigungen** — Empfänger bekommen sofort eine DM bei neuer Nachricht sowie eine einmalige Erinnerung 3 Tage vor Löschung einer ungelesenen Nachricht (Löschfrist konfigurierbar, Default 30 Tage)
 - **Board/Bulletins** — öffentliche Nachrichten, sticky-Flag (nie automatisch gelöscht), automatische Aufräumung nach konfigurierbarer Frist
 - **Self-Service-Registrierung** — Nutzer registrieren sich per `add` direkt über den MeshCore-Kanal, kein manuelles Anlegen durch den SysOp nötig
 - **Kontakt-Einladung per QR/Link** — nach der Registrierung schickt die BBS eine `meshcore://contact/add`-URI, die die MeshCore-App direkt als "Kontakt hinzufügen"-Dialog anbietet
@@ -209,7 +210,7 @@ Wichtige Optionen in `config/config.yaml` (Details/Kommentare direkt in der Date
 | `meshcore` | `serial_port`, `baud_rate`, `channel`, `channel_name`, `channel_region`, `tx_power`, `path_hash_mode`, `contacts` |
 | `storage` | `path` (SQLite-Datei) |
 | `board` | `retention_days` |
-| `messages` | `max_personal` (Postfach-Limit) |
+| `messages` | `max_personal` (Postfach-Limit), `unread_retention_days` (Löschfrist ungelesener Nachrichten, Erinnerung 3 Tage vorher) |
 | `homeassistant` | `url`, `verify_ssl` (Token separat in `secrets.yaml`) |
 
 Viele Optionen (TX-Power, Path-Hash-Mode, Region-Scope, Kanalname, Feature-Flags, Betreiberdaten) sind zusätzlich **live im Web-Admin unter *Einstellungen*** änderbar und wirken sofort ohne Neustart.

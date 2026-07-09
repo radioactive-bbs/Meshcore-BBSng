@@ -109,9 +109,13 @@ class TelnetStream:
 
 
 class TelnetServer(BaseProtocol):
-    def __init__(self, db: Database, config: dict):
+    def __init__(self, db: Database, config: dict, notify_dm=None):
         self.db = db
         self.config = config
+        # Optionaler DM-Benachrichtigungs-Callback (MeshCoreServer.notify_dm) -
+        # ermoeglicht proaktive Push-Benachrichtigung an MeshCore-Empfaenger,
+        # auch wenn die Nachricht per Telnet gesendet wurde.
+        self.notify_dm = notify_dm
         self.active_sessions: dict = {}
         self._server: asyncio.AbstractServer = None
 
@@ -162,7 +166,8 @@ class TelnetServer(BaseProtocol):
             return
         callsign = callsign.upper()
 
-        session = BBSSession(callsign, self.db, writer, self.active_sessions, self.config)
+        session = BBSSession(callsign, self.db, writer, self.active_sessions, self.config,
+                             notify_dm=self.notify_dm)
         self.active_sessions[callsign] = session
 
         try:

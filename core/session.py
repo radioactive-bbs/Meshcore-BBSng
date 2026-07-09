@@ -23,13 +23,13 @@ BANNER = r"""
 
 class BBSSession:
     def __init__(self, callsign: str, db: Database, writer: asyncio.StreamWriter,
-                 active_sessions: dict, config: dict):
+                 active_sessions: dict, config: dict, notify_dm=None):
         self.callsign = callsign.upper()
         self.db = db
         self.writer = writer
         self.active_sessions = active_sessions
         self.config = config
-        self.bbs = BBSCore(db, config)
+        self.bbs = BBSCore(db, config, notify_dm=notify_dm)
         self.user: Optional[User] = None
         self._collecting_message = False
         self._awaiting_subject = False

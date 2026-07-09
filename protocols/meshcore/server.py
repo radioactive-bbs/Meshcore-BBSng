@@ -109,7 +109,9 @@ class MeshCoreServer(BaseProtocol):
     def __init__(self, db: Database, config: dict):
         self.db      = db
         self.config  = config
-        self.bbs     = BBSCore(db, config)
+        # self.notify_dm als eigene Methode: BBSCore ruft sie fuer proaktive
+        # DM-Benachrichtigungen auf (neue Nachricht / Loesch-Erinnerung).
+        self.bbs     = BBSCore(db, config, notify_dm=self.notify_dm)
 
         # pubkey_prefix (6B hex) -> Contact
         self._contacts: dict[str, Contact] = {}
@@ -359,16 +361,34 @@ class MeshCoreServer(BaseProtocol):
         logger.info("Web-Admin: %s entfernt", name.upper())
         return True
 
-    async def sysop_dm(self, name: str, text: str) -> bool:
-        """Sendet eine DM vom SysOp an einen registrierten User."""
+    async def _dm_to_registered_user(self, name: str, text: str) -> bool:
+        """Sendet eine DM an einen registrierten User (per Name/Rufzeichen), falls
+        bekannt. Gemeinsame Grundlage fuer SysOp-DMs und automatische Benachrichtigungen
+        (neue Nachricht / Loesch-Erinnerung). Gibt False zurueck, wenn der Name nicht
+        als MeshCore-Kontakt registriert ist (z.B. reiner Telnet-User ohne Mesh-Zugang)."""
         found = await self.db.find_mc_contact_by_name(name)
         if not found:
             return False
         prefix = bytes.fromhex(found[0])[:6]
         chunks = _chunk(text.splitlines() or [text], self.max_len)
         await self._send_dm_chunks(prefix, chunks[:self.max_chunks])
-        logger.info("Web-Admin: SysOp-DM an %s (%d Chunk(s))", name.upper(), len(chunks))
         return True
+
+    async def sysop_dm(self, name: str, text: str) -> bool:
+        """Sendet eine DM vom SysOp an einen registrierten User (Web-Admin)."""
+        sent = await self._dm_to_registered_user(name, text)
+        if sent:
+            logger.info("Web-Admin: SysOp-DM an %s", name.upper())
+        return sent
+
+    async def notify_dm(self, name: str, text: str) -> bool:
+        """Automatische Benachrichtigung (neue Nachricht / Loesch-Erinnerung) an
+        einen registrierten User. Wird der BBSCore als notify_dm-Callback uebergeben,
+        siehe core/bbs.py."""
+        sent = await self._dm_to_registered_user(name, text)
+        if sent:
+            logger.info("Benachrichtigung an %s gesendet", name.upper())
+        return sent
 
     async def send_channel_broadcast(self, text: str):
         """Sendet eine Nachricht in den BBS-Kanal (Web-Admin)."""
