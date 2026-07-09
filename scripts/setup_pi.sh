@@ -14,6 +14,7 @@ set -euo pipefail
 
 # ── Konfiguration (bei Bedarf anpassen) ──────────────────────────────────────
 REPO_URL="https://github.com/DEIN-USER/Meshcore-BBSng.git"   # eigene Repo-URL eintragen
+BRANCH="main"                                                 # ggf. auf eigenen Branch anpassen
 SERVICE_USER="coreadmin"
 INSTALL_DIR="/home/${SERVICE_USER}/nnp-bbs"
 SERVICE_NAME="nnp-bbs"
@@ -78,14 +79,14 @@ fi
 
 # ── Repository klonen / aktualisieren ────────────────────────────────────────
 if [[ -d "$INSTALL_DIR/.git" ]]; then
-    info "Repository vorhanden – stelle sicher dass master-Branch aktiv ist..."
+    info "Repository vorhanden – stelle sicher dass ${BRANCH}-Branch aktiv ist..."
     sudo -u "$SERVICE_USER" git -C "$INSTALL_DIR" fetch origin
-    sudo -u "$SERVICE_USER" git -C "$INSTALL_DIR" checkout master
-    sudo -u "$SERVICE_USER" git -C "$INSTALL_DIR" pull origin master
+    sudo -u "$SERVICE_USER" git -C "$INSTALL_DIR" checkout "$BRANCH"
+    sudo -u "$SERVICE_USER" git -C "$INSTALL_DIR" pull origin "$BRANCH"
     ok "Repository aktualisiert."
 else
     info "Klone Repository nach $INSTALL_DIR..."
-    sudo -u "$SERVICE_USER" git clone -b master "$REPO_URL" "$INSTALL_DIR"
+    sudo -u "$SERVICE_USER" git clone -b "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
     ok "Repository geklont."
 fi
 
