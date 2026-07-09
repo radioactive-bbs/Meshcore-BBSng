@@ -123,6 +123,7 @@ add BENUTZERNAME:PUBKEY
 - Raspberry Pi (oder anderer Linux-Host) mit Python 3.11+
 - Ein MeshCore-fähiges LoRa-Gerät (getestet: Heltec WiFi LoRa 32 v4) mit Companion-Firmware, per USB angeschlossen
 - Für die Wetter-Integration (optional): eine erreichbare Home-Assistant-Instanz mit Long-Lived-Access-Token
+- SSH-Zugang mit einem `sudo`-fähigen Benutzer (muss **nicht** `coreadmin` selbst sein — `setup_pi.sh` prüft, ob der dedizierte Service-User `coreadmin` bereits existiert, und legt ihn bei Bedarf automatisch an, siehe unten)
 
 ### Automatische Ersteinrichtung (Raspberry Pi)
 
@@ -135,7 +136,7 @@ bash scripts/setup_pi.sh
 Das Skript ist idempotent (mehrfach ausführbar) und richtet automatisch ein:
 
 1. Systempakete (Python, Build-Header für `cryptography`)
-2. Dedizierten Service-User (`coreadmin`) inkl. `dialout`-Gruppe für den seriellen Port
+2. Dedizierten Service-User `coreadmin` — wird geprüft (`id coreadmin`) und **nur bei Bedarf** neu angelegt (`useradd -m`), inkl. `dialout`-Gruppe für den seriellen Port. Existiert der User bereits, wird dieser Schritt übersprungen.
 3. Python-Virtualenv + Abhängigkeiten
 4. `config/secrets.yaml` und `config/config.local.yaml` aus den Vorlagen (danach manuell mit echten Werten füllen)
 5. At-Rest-Verschlüsselungsschlüssel als verschlüsseltes systemd-Credential (automatisch, kein manueller Schritt)
@@ -165,6 +166,8 @@ journalctl -fu nnp-bbs
 Web-Admin danach erreichbar unter `https://<Server-IP>:8080` (self-signed Zertifikat, Browser-Warnung beim ersten Zugriff bestätigen).
 
 ### Manuelle Installation (ohne `setup_pi.sh`)
+
+Kein dedizierter `coreadmin`-User nötig — läuft unter dem aktuell angemeldeten Benutzer.
 
 ```bash
 python3 -m venv .venv
