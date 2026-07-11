@@ -35,8 +35,8 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 - **Private Nachrichten** — Postfach je Rufzeichen, konfigurierbares Limit, AES-256-GCM-verschlüsselt at-rest
 - **Proaktive DM-Benachrichtigungen** — Empfänger bekommen sofort eine DM bei neuer Nachricht sowie eine einmalige Erinnerung 3 Tage vor Löschung einer ungelesenen Nachricht (Löschfrist konfigurierbar, Default 30 Tage)
 - **Board/Bulletins** — öffentliche Nachrichten, sticky-Flag (nie automatisch gelöscht), automatische Aufräumung nach konfigurierbarer Frist
-- **Self-Service-Registrierung** — Nutzer registrieren sich per `add` direkt über den MeshCore-Kanal, kein manuelles Anlegen durch den SysOp nötig
-- **Kontakt-Einladung per QR/Link** — nach der Registrierung schickt die BBS eine `meshcore://contact/add`-URI, die die MeshCore-App direkt als "Kontakt hinzufügen"-Dialog anbietet
+- **Self-Service-Registrierung** — Nutzer registrieren sich per `add` direkt über den MeshCore-Kanal, kein manuelles Anlegen durch den SysOp nötig. Pubkey-Bestätigung per Direktnachricht-Challenge verhindert, dass sich jemand einen fremden Rufzeichen-Namen unter dem eigenen Pubkey sichert (siehe [Self-Service-Registrierung](#self-service-registrierung-nur-meshcore-kanal))
+- **Kontakt-Einladung per QR/Link** — die BBS schickt eine `meshcore://contact/<pubkey>`-URI, die die MeshCore-App direkt als "Kontakt hinzufügen"-Dialog anbietet
 - **Wetter-Integration** — aktuelle Werte + 1-/3-Tage-Vorhersage über eine angebundene [Home Assistant](https://www.home-assistant.io/)-Instanz
 - **PING/Traceroute** — Pfad- und Laufzeitmessung zu einzelnen Nodes/Repeatern im Mesh, mit automatischem Retry bei Paketverlust
 - **Feature-Flags** — jede Funktionsgruppe (Nachrichten, Board, Wetter, Sysinfo, Online-Liste, Userliste, PING, Account, Self-Service) einzeln im Web-Admin abschaltbar, wirkt sofort ohne Neustart
@@ -110,11 +110,27 @@ Alle Befehle laufen über den MeshCore-Kanal (Broadcast) bzw. Direktnachrichten.
 
 ### Self-Service-Registrierung (nur MeshCore-Kanal)
 
+Neue Nutzer registrieren sich selbst über eine Nachricht im öffentlichen BBS-Kanal — kein Zutun des SysOp nötig. Der eigene Pubkey wird dabei per Rückfrage-Code bestätigt, damit niemand einen fremden Rufzeichen-Namen unter seinem eigenen Pubkey registrieren kann.
+
+**1. Registrierung beantragen** — im Kanal senden:
+
 ```
 add BENUTZERNAME:PUBKEY
 ```
 
-`PUBKEY` ist der eigene 64-stellige Hex-Pubkey des MeshCore-Node. Nach erfolgreicher Registrierung schickt die BBS eine `meshcore://contact/add`-Einladung zurück in den Kanal — die MeshCore-App erkennt den Link und bietet direkt einen "Kontakt hinzufügen"-Dialog an.
+`BENUTZERNAME` ist frei wählbar (3–16 Zeichen, Buchstaben/Zahlen/`+-.!"§$%&/()=`). `PUBKEY` ist der eigene 64-stellige Hex-Pubkey des MeshCore-Node (in der MeshCore-App unter den eigenen Geräte-Details zu finden).
+
+**2. Sofortige Antworten im Kanal** — die BBS bestätigt den Antrag, schickt eine `meshcore://contact/<pubkey>`-Einladung (die MeshCore-App bietet damit direkt einen "Kontakt hinzufügen"-Dialog an) und weist darauf hin, dass die Bestätigung per Direktnachricht folgt. **Wichtig:** in dieser Zeit den BBS-Kontakt über den Link anlegen, sonst kann die BBS später keine Direktnachricht zustellen.
+
+**3. Bestätigungscode per DM** — rund 10 Minuten nach dem Antrag (bewusste Verzögerung, damit die Route zum frisch angelegten Kontakt steht) schickt die BBS eine Direktnachricht mit einem 6-stelligen Code. Dieser Code muss **als Antwort per Direktnachricht** zurückgeschickt werden.
+
+**4. Abschluss** — bei korrektem Code ist der Account sofort aktiv, die BBS bestätigt per DM und der SysOp erhält automatisch eine Benachrichtigung über die Neuanmeldung. Kommt innerhalb von 10 Minuten nach der Code-DM keine (korrekte) Antwort, verfällt der Antrag automatisch — der Benutzername wird wieder frei und `add` kann erneut gesendet werden.
+
+Ohne diese Bestätigung landet **kein** Eintrag in der Nutzerdatenbank — der behauptete Pubkey allein reicht nicht aus, erst der Nachweis per Antwort-DM (nur möglich mit dem passenden Gerät) schließt die Registrierung ab.
+
+Zum Schutz vor Missbrauch/Spam sind maximal 2 neue Registrierungsanträge pro Minute zulässig; weitere `add`-Versuche werden in dieser Zeit mit einer Fehlermeldung abgewiesen.
+
+Danach: `REMOVE` als Direktnachricht löscht die eigene Registrierung jederzeit wieder.
 
 ## Installation
 
