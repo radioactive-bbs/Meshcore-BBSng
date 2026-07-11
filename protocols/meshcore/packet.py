@@ -167,12 +167,12 @@ def build_set_path_hash_mode(mode: int) -> bytes:
 
 
 def contact_add_uri(name: str, pubkey_hex: str, contact_type: int = ADV_TYPE_CHAT) -> str:
-    """Baut eine meshcore://contact/add-URI. Die MeshCore-App erkennt sie in einer
+    """Baut eine meshcore://contact/<pubkey>-URI. Die MeshCore-App erkennt sie in einer
     Nachricht (oder als QR-Code) und bietet dem Empfaenger einen 'Kontakt hinzufuegen'-
     Dialog an – kein manuelles Abtippen des 64-Hex-Pubkeys noetig.
     type: 1=Companion/Chat, 2=Repeater, 3=Room-Server, 4=Sensor (ADV_TYPE_*)."""
-    return (f"meshcore://contact/add?name={quote(name, safe='')}"
-            f"&public_key={pubkey_hex}&type={contact_type}")
+    return (f"meshcore://contact/{pubkey_hex}"
+            f"?name={quote(name, safe='')}&type={contact_type}")
 
 
 def region_scope_key(region: str) -> bytes:
