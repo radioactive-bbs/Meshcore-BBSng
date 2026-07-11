@@ -288,10 +288,16 @@ class BBSCore:
             created_at=datetime.utcnow(),
         )
         msg_id = await self.db.save_message(msg)
+        # Inhalt direkt per Push-DM zustellen statt nur eines Hinweises -- der
+        # Empfaenger muss nicht extra NL/R<id> senden, um zu lesen. Bleibt bis zum
+        # expliziten R<id> als "ungelesen" markiert (Badge/Loesch-Erinnerung
+        # unveraendert), ist bei Nichterreichbarkeit best-effort (_try_notify).
         await self._try_notify(
             to_call,
-            f"\U0001f4e8 Neue Nachricht #{msg_id} von {from_call.upper()}: {subject}\n"
-            f"NL zum Anzeigen, R{msg_id} zum Lesen")
+            f"\U0001f4e8 Neue Nachricht #{msg_id} von {from_call.upper()}\n"
+            f"Betreff: {subject}\n"
+            f"---\n"
+            f"{body}")
         return [f"Msg #{msg_id} an {to_call} gespeichert. 73!"]
 
     async def cmd_bulletin(self, from_call: str, topic: str, body: str) -> list[str]:

@@ -421,7 +421,15 @@ class MeshCoreServer(BaseProtocol):
             return False
         prefix = bytes.fromhex(found[0])[:6]
         chunks = _chunk(text.splitlines() or [text], self.max_len)
-        await self._send_dm_chunks(prefix, chunks[:self.max_chunks])
+        if len(chunks) > self.max_chunks:
+            # Stille Kuerzung waere bei zugestelltem Nachrichteninhalt (cmd_send)
+            # irrefuehrend -- Empfaenger muss erkennen, dass der Text nicht vollstaendig
+            # ankam (gleiches Chunk-Limit wie bei R<id>, der Text selbst bleibt aber
+            # unveraendert in der DB gespeichert).
+            suffix = " [+]"
+            chunks = chunks[:self.max_chunks]
+            chunks[-1] = chunks[-1][:self.max_len - len(suffix)] + suffix
+        await self._send_dm_chunks(prefix, chunks)
         return True
 
     async def sysop_dm(self, name: str, text: str) -> bool:

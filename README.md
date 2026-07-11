@@ -33,7 +33,7 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 
 ### BBS-Kern
 - **Private Nachrichten** — Postfach je Rufzeichen, konfigurierbares Limit, AES-256-GCM-verschlüsselt at-rest
-- **Proaktive DM-Benachrichtigungen** — Empfänger bekommen sofort eine DM bei neuer Nachricht sowie eine einmalige Erinnerung 3 Tage vor Löschung einer ungelesenen Nachricht (Löschfrist konfigurierbar, Default 30 Tage)
+- **Proaktive Zustellung** — neue private Nachrichten werden dem Empfänger sofort per Direktnachricht mit vollem Inhalt zugestellt (kein Umweg über `NL`/`R<n>` nötig, gilt weiter als ungelesen bis explizit gelesen), plus eine einmalige Erinnerung 3 Tage vor Löschung einer ungelesenen Nachricht (Löschfrist konfigurierbar, Default 30 Tage). Ist der Empfänger gerade nicht erreichbar, zeigt das Hauptmenü beim nächsten Login einen Badge mit der Anzahl ungelesener Nachrichten
 - **Board/Bulletins** — öffentliche Nachrichten, sticky-Flag (nie automatisch gelöscht), automatische Aufräumung nach konfigurierbarer Frist
 - **Self-Service-Registrierung** — Nutzer registrieren sich per `add` direkt über den MeshCore-Kanal, kein manuelles Anlegen durch den SysOp nötig. Pubkey-Bestätigung per Direktnachricht-Challenge verhindert, dass sich jemand einen fremden Rufzeichen-Namen unter dem eigenen Pubkey sichert (siehe [Self-Service-Registrierung](#self-service-registrierung-nur-meshcore-kanal))
 - **Kontakt-Einladung per QR/Link** — die BBS schickt eine `meshcore://contact/<pubkey>`-URI, die die MeshCore-App direkt als "Kontakt hinzufügen"-Dialog anbietet
