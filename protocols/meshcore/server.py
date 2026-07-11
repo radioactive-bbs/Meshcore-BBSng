@@ -115,6 +115,11 @@ class MeshCoreServer(BaseProtocol):
 
         # pubkey_prefix (6B hex) -> Contact
         self._contacts: dict[str, Contact] = {}
+        # pubkey_prefix (6B hex) -> registrierter DB-Name (stabile Identitaet fuer
+        # Statistik-Events; der Node kann seinen Kontaktnamen jederzeit aendern,
+        # z.B. Gross-/Kleinschreibung oder ein "/P"-Suffix, ohne dass sich der
+        # Pubkey aendert -- siehe _canonical_name())
+        self._registered_names: dict[str, str] = {}
         # pubkey_prefix (6B hex) -> last_seen timestamp
         self._nodes: dict[str, float] = {}
         # pubkey_prefix (6B hex) -> current menu state
@@ -244,6 +249,7 @@ class MeshCoreServer(BaseProtocol):
                 name   = entry["name"].upper()
                 c      = Contact(pubkey=pubkey, name=name)
                 self._contacts[c.pubkey_prefix.hex()] = c
+                self._registered_names[c.pubkey_prefix.hex()] = name
                 logger.info("Bekannter Kontakt geladen: %s (%s)", name, c.pubkey_prefix.hex())
             except Exception as exc:
                 logger.warning("Kontakt-Konfigfehler: %s", exc)
@@ -255,7 +261,16 @@ class MeshCoreServer(BaseProtocol):
             pubkey = bytes.fromhex(pubkey_hex)
             c = Contact(pubkey=pubkey, name=name)
             self._contacts[c.pubkey_prefix.hex()] = c
+            self._registered_names[c.pubkey_prefix.hex()] = name
             logger.info("DB-Kontakt geladen: %s (%s)", name, c.pubkey_prefix.hex())
+
+    def _canonical_name(self, prefix_hex: str, fallback: str) -> str:
+        """Stabiler Name fuer Statistik-Events (events.callsign): bevorzugt den
+        registrierten DB-Namen. Der vom Node gemeldete Kontaktname (self._contacts)
+        kann sich jederzeit aendern (Gross-/Kleinschreibung, '/P'-Suffix, Emoji...),
+        ohne dass eine Neu-Registrierung stattfindet -- sonst zerfaellt derselbe
+        User in der Statistik in mehrere Zeilen."""
+        return self._registered_names.get(prefix_hex, fallback)
 
     async def _register_contacts_with_node(self):
         """Registriert alle DB-Kontakte beim Node NACH dem APP_START.
@@ -583,7 +598,8 @@ class MeshCoreServer(BaseProtocol):
                         del self._pending[prefix_hex]
                         logger.info("ACK von %s ✓ (RTT %dms)", name, rtt)
                         route = "flood" if pend.is_flood else ("multihop" if (contact and contact.path) else "direct")
-                        self._create_tracked_task(self.db.log_event("ack", name, str(rtt), route=route))
+                        self._create_tracked_task(self.db.log_event(
+                            "ack", self._canonical_name(prefix_hex, name), str(rtt), route=route))
                     matched = True
                     break
             if not matched:
@@ -873,7 +889,8 @@ class MeshCoreServer(BaseProtocol):
         # enthalten, z.B. beim S-Befehl), im Gegensatz zu Channel-Broadcasts (oeffentlich).
         logger.info("Msg von %s%s%s: ###private message###", callsign, hop_info, snr_info)
         self._create_tracked_task(
-            self.db.log_event("rx", callsign, hop_info.strip(), snr=msg.snr, route=route))
+            self.db.log_event("rx", self._canonical_name(prefix_hex, callsign),
+                               hop_info.strip(), snr=msg.snr, route=route))
 
         # Wartungsmodus: alles mit Hinweis beantworten, nichts ausfuehren
         maint = self.config.get("maintenance", {})
@@ -1191,6 +1208,7 @@ class MeshCoreServer(BaseProtocol):
         await self.db.save_mc_contact(pubkey_hex, username)
         c = Contact(pubkey=bytes.fromhex(pubkey_hex), name=username, path=path)
         self._contacts[c.pubkey_prefix.hex()] = c
+        self._registered_names[c.pubkey_prefix.hex()] = username
         logger.info("ADD: %s eingetragen, prefix=%s, path=%s",
                     username, c.pubkey_prefix.hex(), path.hex() if path else "leer")
 
@@ -1242,6 +1260,7 @@ class MeshCoreServer(BaseProtocol):
         pubkey_prefix = bytes.fromhex(stored_pubkey_hex)[:6]
         await self.db.delete_mc_contact(stored_pubkey_hex)
         self._contacts.pop(pubkey_prefix.hex(), None)
+        self._registered_names.pop(pubkey_prefix.hex(), None)
         await self._reply_channel(f"{sender} entfernt. 73!")
         logger.info("Self-Service: %s via Kanal entfernt", sender)
 
@@ -1259,6 +1278,7 @@ class MeshCoreServer(BaseProtocol):
 
         await self.db.delete_mc_contact(stored_pubkey_hex)
         self._contacts.pop(prefix_hex, None)
+        self._registered_names.pop(prefix_hex, None)
         await self._reply(pubkey_prefix, f"{callsign} entfernt. 73!")
         logger.info("Self-Service: %s entfernt (%s)", callsign, prefix_hex)
 
@@ -1321,14 +1341,15 @@ class MeshCoreServer(BaseProtocol):
                 # Flood-DMs: kein Retry – best-effort, ACK kommt bei schlechtem Link nicht zurueck
                 max_retries = 0 if pend.is_flood else MAX_RETRIES
                 if pend.retries >= max_retries:
+                    canonical = self._canonical_name(prefix_hex, name)
                     if pend.is_flood:
                         logger.info("Flood-DM an %s: kein ACK (best-effort gesendet)", name)
-                        self._create_tracked_task(self.db.log_event("noack", name, "flood", route="flood"))
+                        self._create_tracked_task(self.db.log_event("noack", canonical, "flood", route="flood"))
                     else:
                         logger.warning("Keine Bestaetigung von %s nach %d Versuchen – aufgegeben",
                                        name, MAX_RETRIES + 1)
                         route = "multihop" if (contact and contact.path) else "direct"
-                        self._create_tracked_task(self.db.log_event("noack", name, "retries", route=route))
+                        self._create_tracked_task(self.db.log_event("noack", canonical, "retries", route=route))
                     self._pending.pop(prefix_hex, None)
                     continue
                 # Eintrag herausnehmen, damit spaete Alt-ACKs ihn nicht wiederbeleben
