@@ -2,6 +2,7 @@ import asyncio
 import glob
 import logging
 import random
+import secrets
 import struct
 import time
 from datetime import datetime, timedelta
@@ -72,6 +73,14 @@ CONFIRM_TIMEOUT = 30.0  # Fallback-Sekunden, falls Node kein est_timeout liefert
 CONFIRM_FLOOR   = 15.0  # Mindest-Wartezeit auf ACK
 CONFIRM_CAP     = 90.0  # Max-Wartezeit auf ACK
 MAX_RETRIES     = 2     # danach aufgeben
+
+# Self-Service-Registrierung ('add' via Kanal): Pubkey-Bestaetigung statt
+# blindem Vertrauen auf den im Klartext mitgeschickten Pubkey.
+REGISTRATION_CHALLENGE_DELAY = 600   # Sekunden bis zur Bestaetigungs-DM (Zeit
+                                      # fuer den User, das BBS als Kontakt anzulegen)
+REGISTRATION_CHALLENGE_TIMEOUT = 600  # Sekunden, die der Code nach Versand gueltig ist
+REGISTRATION_RATE_LIMIT  = 2    # max. akzeptierte 'add'-Anfragen ...
+REGISTRATION_RATE_WINDOW = 60.0  # ... pro Sekunden (Anti-Spam/Squatting-Flood)
 SENT_WAIT       = 5.0   # Sekunden auf RESP_CODE_SENT nach einem DM-Send
 
 
@@ -132,6 +141,14 @@ class MeshCoreServer(BaseProtocol):
         # Sperrliste (Cache): 12-Hex-Prefixe und volle Pubkeys
         self._blocked_prefixes: set[str] = set()
         self._blocked_pubkeys: set[str] = set()
+
+        # pubkey_prefix (6B hex) -> {"username", "pubkey_hex", "code"} fuer
+        # Self-Service-Registrierungen, die auf die Pubkey-Bestaetigung warten
+        # (siehe _channel_add / _send_registration_challenge)
+        self._pending_registrations: dict[str, dict] = {}
+        # Timestamps akzeptierter 'add'-Anfragen, fuer das Rate-Limit
+        # (max. REGISTRATION_RATE_LIMIT pro REGISTRATION_RATE_WINDOW Sekunden)
+        self._registration_request_times: list[float] = []
 
         self._self_pubkey: Optional[bytes] = None
         self._serial: Optional[aioserial.AioSerial] = None
@@ -893,7 +910,18 @@ class MeshCoreServer(BaseProtocol):
             logger.info("Direktnachricht von unbekanntem Sender %s – ignoriert (bekannte Prefixe: %s)",
                         prefix_hex, known)
             return
-        callsign = contact.name.upper()
+        # Ausstehende Self-Service-Registrierung: solange ein Bestaetigungscode fuer
+        # diesen Pubkey-Prefix aussteht, wird JEDE DM als Code-Antwort behandelt und
+        # NICHT als BBS-Befehl weiterverarbeitet (siehe _confirm_registration).
+        if prefix_hex in self._pending_registrations and \
+                await self._confirm_registration(prefix_hex, msg.text):
+            return
+
+        # Identitaet IMMER ueber den Pubkey-Prefix aufloesen, nie ueber den vom Node
+        # gemeldeten Kontaktnamen: der kann sich jederzeit aendern (Gross-/Kleinschreibung,
+        # "/P"-Suffix, Emoji...) ohne Neu-Registrierung, sonst landen NL/R/S & Co. unter
+        # einer anderen Identitaet als der, unter der Nachrichten gespeichert wurden.
+        callsign = self._canonical_name(prefix_hex, contact.name.upper())
 
         snr_info = f" SNR:{msg.snr:.1f}dB" if msg.snr is not None else ""
         if msg.is_direct:
@@ -910,8 +938,7 @@ class MeshCoreServer(BaseProtocol):
         # enthalten, z.B. beim S-Befehl), im Gegensatz zu Channel-Broadcasts (oeffentlich).
         logger.info("Msg von %s%s%s: ###private message###", callsign, hop_info, snr_info)
         self._create_tracked_task(
-            self.db.log_event("rx", self._canonical_name(prefix_hex, callsign),
-                               hop_info.strip(), snr=msg.snr, route=route))
+            self.db.log_event("rx", callsign, hop_info.strip(), snr=msg.snr, route=route))
 
         # Wartungsmodus: alles mit Hinweis beantworten, nichts ausfuehren
         maint = self.config.get("maintenance", {})
@@ -1226,11 +1253,30 @@ class MeshCoreServer(BaseProtocol):
             await self._reply_channel(f"Fehler: Benutzername '{username}' ist bereits vergeben")
             return
 
-        await self.db.save_mc_contact(pubkey_hex, username)
+        prefix_hex = bytes.fromhex(pubkey_hex)[:6].hex()
+        if prefix_hex in self._pending_registrations or any(
+                p["username"] == username for p in self._pending_registrations.values()):
+            await self._reply_channel(f"Fehler: '{username}' wartet bereits auf Bestaetigung")
+            return
+
+        # Rate-Limit gegen Squatting-Flut / Spam: der im Klartext mitgeschickte PUBKEY
+        # ist bis zur Bestaetigungs-Antwort unbewiesen (siehe _send_registration_challenge),
+        # jede Annahme reserviert also einen Namen ohne Identitaetsnachweis.
+        now = time.time()
+        self._registration_request_times = [
+            t for t in self._registration_request_times if now - t < REGISTRATION_RATE_WINDOW]
+        if len(self._registration_request_times) >= REGISTRATION_RATE_LIMIT:
+            await self._reply_channel(
+                "Fehler: Zu viele Neuanmeldungen gerade. Bitte in einer Minute erneut versuchen.")
+            return
+        self._registration_request_times.append(now)
+
         c = Contact(pubkey=bytes.fromhex(pubkey_hex), name=username, path=path)
         self._contacts[c.pubkey_prefix.hex()] = c
-        self._registered_names[c.pubkey_prefix.hex()] = username
-        logger.info("ADD: %s eingetragen, prefix=%s, path=%s",
+        self._pending_registrations[c.pubkey_prefix.hex()] = {
+            "username": username, "pubkey_hex": pubkey_hex, "code": None,
+        }
+        logger.info("ADD: %s wartet auf Pubkey-Bestaetigung, prefix=%s, path=%s",
                     username, c.pubkey_prefix.hex(), path.hex() if path else "leer")
 
         # path=b'' → out_path_len=0xFF (Flooding).
@@ -1238,11 +1284,13 @@ class MeshCoreServer(BaseProtocol):
         # und wuerden den korrekten, vom Node selbst gelernten Pfad ueberschreiben.
         # Der Node kennt den Weg bereits durch die empfangene Channel-Nachricht
         # und entdeckt optimale Routen eigenstaendig nach dem ersten gesendeten DM.
+        # Der Kontakt muss trotz ausstehender Bestaetigung schon jetzt beim Node
+        # angelegt werden, sonst kann spaeter keine Bestaetigungs-DM geroutet werden.
         await self._send(build_add_contact(pubkey_hex, username))
         await asyncio.sleep(0.5)
 
         await self._reply_channel(
-            f"{username} eingetragen. Willkommen auf {self.channel_name}! 73 de {bbs_call}")
+            f"{username}: Antrag erhalten, Willkommen auf {self.channel_name}! 73 de {bbs_call}")
 
         if self._self_pubkey:
             qth = self.config.get("qth", "BBS")
@@ -1258,15 +1306,93 @@ class MeshCoreServer(BaseProtocol):
             await self._reply_channel(uri)
 
         await asyncio.sleep(2.0)
-        welcome = (
-            f"Hallo {username}! Du erreichst das BBS per Direktnachricht. "
-            f"H = Hilfe & Befehlsuebersicht. "
-            f"Account loeschen: sende REMOVE als Direktnachricht. "
-            f"73 de {bbs_call}"
-        )
-        await self._reply(c.pubkey_prefix, welcome)
-        logger.info("Self-Service: %s registriert (pubkey %s..., path=%s)",
+        await self._reply_channel(
+            f"{username}: in ca. {REGISTRATION_CHALLENGE_DELAY // 60} Minuten erhaeltst du eine "
+            f"DM mit einem Bestaetigungscode zum Abschluss der Registrierung (Zeit zum "
+            f"Kontakt-Anlegen). 73 de {bbs_call}")
+        logger.info("Self-Service: %s beantragt (pubkey %s..., path=%s)",
                     username, pubkey_hex[:12], path.hex() if path else "leer")
+
+        self._create_tracked_task(self._send_registration_challenge(c.pubkey_prefix.hex()))
+
+    async def _send_registration_challenge(self, prefix_hex: str):
+        """Wartet REGISTRATION_CHALLENGE_DELAY, damit der User Zeit hat, das BBS als
+        Kontakt anzulegen (sonst geht die DM ins Leere), und schickt dann einen
+        zufaelligen Bestaetigungscode per Direktnachricht an genau den Pubkey, der
+        im 'add'-Befehl behauptet wurde. Nur eine Antwort DAVON beweist, dass der
+        Absender tatsaechlich diesen Pubkey/dieses Geraet besitzt -- der Klartext-
+        Pubkey im Kanal-Befehl allein ist keine Identitaetsverifikation."""
+        await asyncio.sleep(REGISTRATION_CHALLENGE_DELAY)
+        pending = self._pending_registrations.get(prefix_hex)
+        if not pending:
+            return  # inzwischen abgelaufen oder Server neu gestartet (State ist nur RAM)
+
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        pending["code"] = code
+        pending["challenge_sent_at"] = time.time()
+        await self._reply(bytes.fromhex(prefix_hex),
+                           f"Bestaetigungscode: {code}\n"
+                           f"Sende ihn als Antwort (Direktnachricht) um die Registrierung "
+                           f"von '{pending['username']}' abzuschliessen. Gueltig "
+                           f"{REGISTRATION_CHALLENGE_TIMEOUT // 60} Minuten.")
+        logger.info("Registrierung: Bestaetigungscode an %s (%s...) gesendet",
+                    pending["username"], prefix_hex[:12])
+
+        await asyncio.sleep(REGISTRATION_CHALLENGE_TIMEOUT)
+        expired = self._pending_registrations.get(prefix_hex)
+        if expired is pending and expired.get("code") == code:
+            self._pending_registrations.pop(prefix_hex, None)
+            self._contacts.pop(prefix_hex, None)
+            logger.info("Registrierung: Bestaetigungscode fuer %s abgelaufen, verworfen",
+                        pending["username"])
+            await self._reply(bytes.fromhex(prefix_hex),
+                               f"Registrierung von '{pending['username']}' abgelaufen "
+                               f"(keine Bestaetigung erhalten). Bitte erneut per 'add' versuchen.")
+
+    async def _confirm_registration(self, prefix_hex: str, code: str) -> bool:
+        """Prueft eine per DM eingegangene Bestaetigungscode-Antwort gegen eine
+        ausstehende Registrierung und schliesst sie bei Uebereinstimmung ab.
+        Gibt True zurueck, wenn die Nachricht als Bestaetigungsversuch behandelt
+        wurde (unabhaengig davon ob der Code stimmte) -- der Aufrufer darf die
+        Nachricht dann NICHT mehr als normalen BBS-Befehl weiterverarbeiten."""
+        pending = self._pending_registrations.get(prefix_hex)
+        if not pending or not pending.get("code"):
+            return False
+
+        if code.strip() != pending["code"]:
+            await self._reply(bytes.fromhex(prefix_hex),
+                               "Falscher Code. Bitte den Bestaetigungscode aus der "
+                               "vorherigen DM erneut senden.")
+            return True
+
+        username, pubkey_hex = pending["username"], pending["pubkey_hex"]
+        self._pending_registrations.pop(prefix_hex, None)
+
+        if await self.db.find_mc_contact_by_pubkey(pubkey_hex) or \
+                await self.db.find_mc_contact_by_name(username):
+            # Zwischenzeitlich anderweitig vergeben (z.B. Admin via Web-Admin) -- abbrechen.
+            await self._reply(bytes.fromhex(prefix_hex),
+                               f"Fehler: '{username}' ist inzwischen anderweitig vergeben.")
+            return True
+
+        await self.db.save_mc_contact(pubkey_hex, username)
+        self._registered_names[prefix_hex] = username
+        bbs_call = self.config.get("callsign", "SysOp")
+        welcome = (
+            f"Bestaetigt! Hallo {username}, dein Account ist jetzt aktiv. "
+            f"Du erreichst das BBS per Direktnachricht. H = Hilfe & Befehlsuebersicht. "
+            f"Account loeschen: sende REMOVE als Direktnachricht. 73 de {bbs_call}"
+        )
+        await self._reply(bytes.fromhex(prefix_hex), welcome)
+        logger.info("Self-Service: %s bestaetigt und registriert (pubkey %s...)",
+                    username, pubkey_hex[:12])
+
+        sysop_call = self.config.get("sysop", "")
+        if sysop_call:
+            await self.sysop_dm(
+                sysop_call,
+                f"Neuer User registriert: {username} (Pubkey {pubkey_hex[:12]}...)")
+        return True
 
     async def _channel_remove_by_callsign(self, sender: str):
         """remove via Kanal – verifiziert per Rufzeichen aus dem Nachrichten-Prefix."""
