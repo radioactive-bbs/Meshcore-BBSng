@@ -264,6 +264,24 @@ class MeshCoreServer(BaseProtocol):
             self._registered_names[c.pubkey_prefix.hex()] = name
             logger.info("DB-Kontakt geladen: %s (%s)", name, c.pubkey_prefix.hex())
 
+    @staticmethod
+    def _hops_for_path(path: bytes) -> int:
+        """Gesamt-Hopzahl eines bekannten Routing-Pfads: contact.path speichert
+        1 Byte je Repeater (Zwischenstation), die Gesamt-Hops sind Repeater
+        plus der letzte Sprung zum Empfaenger."""
+        return len(path) + 1
+
+    @staticmethod
+    def _hop_bucket(n_hops: int) -> str:
+        """Ordnet eine Hop-Zahl einer Statistik-Kategorie zu (fuer events.route):
+        1 Hop / 2-5 Hops / >5 Hops. Nur fuer Direktpfad-Zustellungen (nicht Flood) --
+        siehe hop_info-Ermittlung in _handle_message() und den ACK/noack-Handlern."""
+        if n_hops <= 1:
+            return "hop_1"
+        if n_hops <= 5:
+            return "hop_2_5"
+        return "hop_gt5"
+
     def _canonical_name(self, prefix_hex: str, fallback: str) -> str:
         """Stabiler Name fuer Statistik-Events (events.callsign): bevorzugt den
         registrierten DB-Namen. Der vom Node gemeldete Kontaktname (self._contacts)
@@ -597,7 +615,9 @@ class MeshCoreServer(BaseProtocol):
                     else:
                         del self._pending[prefix_hex]
                         logger.info("ACK von %s ✓ (RTT %dms)", name, rtt)
-                        route = "flood" if pend.is_flood else ("multihop" if (contact and contact.path) else "direct")
+                        route = ("flood" if pend.is_flood
+                                 else self._hop_bucket(self._hops_for_path(contact.path)) if (contact and contact.path)
+                                 else "hop_1")
                         self._create_tracked_task(self.db.log_event(
                             "ack", self._canonical_name(prefix_hex, name), str(rtt), route=route))
                     matched = True
@@ -878,9 +898,10 @@ class MeshCoreServer(BaseProtocol):
         snr_info = f" SNR:{msg.snr:.1f}dB" if msg.snr is not None else ""
         if msg.is_direct:
             if contact.path:
-                route, hop_info = "multihop", " direkt/multihop"
+                n_hops = self._hops_for_path(contact.path)
+                route, hop_info = self._hop_bucket(n_hops), f" direkt/{n_hops}Hop"
             else:
-                route, hop_info = "direct", " direkt"
+                route, hop_info = "hop_1", " direkt"
         elif msg.hop_count == 0:
             route, hop_info = "flood", " flood"
         else:
@@ -1348,7 +1369,8 @@ class MeshCoreServer(BaseProtocol):
                     else:
                         logger.warning("Keine Bestaetigung von %s nach %d Versuchen – aufgegeben",
                                        name, MAX_RETRIES + 1)
-                        route = "multihop" if (contact and contact.path) else "direct"
+                        route = (self._hop_bucket(self._hops_for_path(contact.path)) if (contact and contact.path)
+                                 else "hop_1")
                         self._create_tracked_task(self.db.log_event("noack", canonical, "retries", route=route))
                     self._pending.pop(prefix_hex, None)
                     continue

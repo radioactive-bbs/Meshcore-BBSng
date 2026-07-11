@@ -1219,12 +1219,17 @@ class WebAdminServer(BaseProtocol):
     # Statistik
     # ------------------------------------------------------------------
 
-    # Routing-Art einer Nachricht: Kategorial, feste Reihenfolge/Farbzuordnung
-    # (gegen Panel #1a2029 validiert, ΔE 41.3 – siehe dataviz-Skill-Palette Slot 1-3).
-    _ROUTE_COLORS = {"flood": "#3987e5", "direct": "#199e70", "multihop": "#c98500", "unbekannt": "#5b6472"}
-    _ROUTE_LABELS = {"flood": "Flood", "direct": "Direkt (1 Hop)",
-                     "multihop": "Direkt/Multihop", "unbekannt": "Unbekannt (Alt-Daten)"}
-    _ROUTE_ORDER = ("flood", "direct", "multihop", "unbekannt")
+    # Routing-Art einer Nachricht: Kategorial (Flood, Grau=Alt-Daten) + eine
+    # ordinale Hop-Rampe (hop_1/hop_2_5/hop_gt5 – ein Grundton, monoton heller->
+    # dunkler nach Hop-Zahl) fuer Direktpfad-Zustellungen. Gegen Panel #1a2029
+    # validiert mit dataviz-Skill scripts/validate_palette.js (--ordinal fuer die
+    # Hop-Rampe, kategorial fuer die Gesamtfolge inkl. Flood/Unbekannt).
+    _ROUTE_COLORS = {"flood": "#3987e5", "hop_1": "#2eaa7b", "hop_2_5": "#009063",
+                     "hop_gt5": "#00764b", "unbekannt": "#5b6472"}
+    _ROUTE_LABELS = {"flood": "Flood", "hop_1": "Direkt (1 Hop)",
+                     "hop_2_5": "Multihop (2-5 Hops)", "hop_gt5": "Multihop (>5 Hops)",
+                     "unbekannt": "Unbekannt (Alt-Daten)"}
+    _ROUTE_ORDER = ("flood", "hop_1", "hop_2_5", "hop_gt5", "unbekannt")
 
     @classmethod
     def _render_stacked_route_chart(cls, rows: list[dict], days: int, title: str, aria_label: str) -> str:
