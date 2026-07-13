@@ -2,6 +2,7 @@ import asyncio
 import glob
 import logging
 import random
+import re
 import secrets
 import struct
 import time
@@ -67,6 +68,10 @@ from storage.database import Database
 logger = logging.getLogger(__name__)
 
 NODE_TIMEOUT    = 600   # Sekunden bis Node als "offline" gilt
+# Befehle mit Zahlenargument, die zusaetzlich zur "X 5"-Form auch attached "X5"
+# akzeptieren (siehe Normalisierung in _dispatch_bbs) -- WX1/WX3 duerfen hier NICHT
+# rein, sonst wuerde "WX1" faelschlich zu WX + Argument 1 zerlegt.
+_NUMERIC_ARG_CMDS = {"R", "K", "ND", "BLO", "NLO"}
 _USER_RE = USERNAME_RE  # siehe core/validation.py
 MAX_MSG_LEN     = 150   # Firmware-Limit: max 150 Zeichen pro Paket
 CONFIRM_TIMEOUT = 30.0  # Fallback-Sekunden, falls Node kein est_timeout liefert
@@ -988,7 +993,8 @@ class MeshCoreServer(BaseProtocol):
         Befehle:
           WX   Wetter      SI Sysinfo      O  Online
           BL   Board-Liste  BLO<n> weitere  NL Nachrichten-Liste  NLO<n> weitere
-          R<n> Lesen        S TO|Betr|Text  SB Thema|Text          K<n> Kill
+          R<n> Lesen        S TO|Betr|Text  SB Thema|Text
+          K<n>/ND<n> Loeschen (nur eigene: erhaltene Nachrichten bzw. eigene Bulletins)
           MI   Meine Info  MC mail         REMOVE Abmelden
         """
         parts = text.strip().split(None, 1)
@@ -996,6 +1002,15 @@ class MeshCoreServer(BaseProtocol):
             return []
         cmd = parts[0].upper()
         arg = parts[1] if len(parts) > 1 else ""
+        # Hilfetexte zeigen Befehle wie "K<n>"/"ND<n>" ohne Leerzeichen, der Parser
+        # spaltet aber nur an Leerzeichen -- ohne diese Normalisierung wuerde "K5"
+        # als unbekannter Befehl "K5" durchfallen statt als K mit Argument 5 erkannt
+        # zu werden. Nur fuer Befehle mit Zahlenargument, sonst wuerde z.B. "WX1"
+        # faelschlich zu WX + Argument 1 zerlegt.
+        if not arg:
+            m = re.match(r'^([A-Z]+)(\d+)$', cmd)
+            if m and m.group(1) in _NUMERIC_ARG_CMDS:
+                cmd, arg = m.group(1), m.group(2)
 
         active = [c.name for c in self._contacts.values()
                   if self._nodes.get(c.pubkey_prefix.hex(), 0) > time.time() - NODE_TIMEOUT]
@@ -1097,11 +1112,12 @@ class MeshCoreServer(BaseProtocol):
             if len(p) < 2:
                 return ["Format: SB Thema|Text"]
             return await self.bbs.cmd_bulletin(callsign, p[0].strip(), p[1].strip())
-        if cmd == "K":
+        if cmd in ("K", "ND"):
             if not msgs_or_board:
                 return unknown
             if not arg.isdigit():
-                return ["Format: K <Nummer>"]
+                return [f"Format: {cmd} <Nummer> (nur eigene Nachrichten: als Empfaenger "
+                        f"erhaltene Nachrichten bzw. eigene Bulletins)"]
             return await self.bbs.cmd_kill(callsign, int(arg))
 
         return unknown

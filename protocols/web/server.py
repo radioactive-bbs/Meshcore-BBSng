@@ -1330,6 +1330,23 @@ class WebAdminServer(BaseProtocol):
         }})();
         </script>"""
 
+    _HEX_PREFIX_RE = re.compile(r'^[0-9A-F]{12}$')
+
+    @classmethod
+    def _fmt_callsign(cls, call: str) -> str:
+        """Events koennen statt eines Namens den rohen Pubkey-Prefix als callsign
+        tragen (siehe MeshCoreServer._canonical_name / PUSH_SEND_CONFIRMED-Handler):
+        das passiert, wenn ein ACK/NOACK eintrifft, bevor bzw. nachdem der Kontakt in
+        self._contacts bekannt ist -- typischerweise waehrend einer noch nicht
+        abgeschlossenen Self-Service-Registrierung (Bestaetigungscode verschickt,
+        aber Code nie/falsch beantwortet). Statt des kryptischen Hex-Strings zeigen
+        wir das als 'Vorregistrierung' an."""
+        if cls._HEX_PREFIX_RE.match(call):
+            return (f"<span style='color:var(--dim)' "
+                    f"title='Pubkey-Prefix {call} – hat eine Registrierungs-DM erhalten, "
+                    f"die Registrierung aber nie abgeschlossen'>⏳ Vorregistrierung ({call[:6]}…)</span>")
+        return _esc(call)
+
     @staticmethod
     def _snr_class(snr: Optional[float]) -> str:
         """Grobe Einordnung fuer LoRa-SNR: >=0dB komfortabel, -10..0 grenzwertig, <-10 schwach."""
@@ -1444,7 +1461,7 @@ class WebAdminServer(BaseProtocol):
             routing_cell = (f"<a href='/stats/user?call={_urlquote(call)}&days={days}' "
                             f"style='display:inline-block'>{dots}</a>" if dots
                             else "<span style='color:var(--dim)'>-</span>")
-            urows.append(f"<tr><td><b>{_esc(call)}</b></td><td>{d.get('rx', 0)}</td>"
+            urows.append(f"<tr><td><b>{self._fmt_callsign(call)}</b></td><td>{d.get('rx', 0)}</td>"
                          f"<td>{routing_cell}</td>"
                          f"<td>{ack}</td><td>{noack}</td>"
                          f"<td class='{cls}'>{quote}</td><td>{rtt}</td>"
@@ -1510,7 +1527,7 @@ class WebAdminServer(BaseProtocol):
           {cards}
         </div>
         <h2>Verlauf</h2>{chart}"""
-        return self._page(request, f"Statistik – {_esc(call)}", "/stats", body)
+        return self._page(request, f"Statistik – {call}", "/stats", body)
 
     # ------------------------------------------------------------------
     # Debug

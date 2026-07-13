@@ -115,7 +115,7 @@ class BBSCore:
             f"\U0001f4e8 Nachrichten {count}/{self.max_personal_messages}",
             "\U0001f4cb NL Liste  \U0001f4d6 R<n> Lesen",
             "✉ S TO|Betr|Text",
-            "\U0001f5d1 K<n> Kill  \U0001f4e1 H Main",
+            "\U0001f5d1 ND<n> Loeschen (nur eigene erhaltene)  \U0001f4e1 H Main",
         ])]
 
     async def menu_board(self) -> list[str]:
@@ -123,7 +123,7 @@ class BBSCore:
             "\U0001f4cb Board",
             "\U0001f4cb BL Liste  \U0001f4d6 R<n> Lesen",
             "\U0001f4dd SB Thema|Text",
-            "\U0001f4e1 H  BBS-Main",
+            "\U0001f5d1 ND<n> Loeschen (nur eigene Bulletins)  \U0001f4e1 H  BBS-Main",
         ])]
 
     async def menu_weather(self) -> list[str]:
@@ -317,8 +317,12 @@ class BBSCore:
         msg = await self.db.get_message(msg_id)
         if not msg:
             return [f"Nachricht #{msg_id} nicht gefunden."]
+        caller = callsign.upper()
         sysop_call = self.config.get("sysop", "").upper()
-        if msg.from_call != callsign.upper() and callsign.upper() != sysop_call:
+        # Private Nachricht: gehoert dem Empfaenger (sein Postfach) -- Board-Bulletin:
+        # gehoert dem Autor (kein Einzelempfaenger, to_call ist "ALL").
+        owner = msg.to_call.upper() if msg.msg_type == "P" else msg.from_call.upper()
+        if caller != owner and caller != sysop_call:
             return ["Keine Berechtigung."]
         await self.db.delete_message(msg_id)
         return [f"Nachricht #{msg_id} geloescht."]
