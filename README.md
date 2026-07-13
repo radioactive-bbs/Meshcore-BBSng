@@ -85,7 +85,9 @@ Alle Befehle laufen über den MeshCore-Kanal (Broadcast) bzw. Direktnachrichten.
 | `R <nr>` | Nachricht/Board-Eintrag `<nr>` lesen |
 | `S TO\|Betreff\|Text` | Private Nachricht senden |
 | `SB Thema\|Text` | Board-Nachricht (Bulletin) veröffentlichen |
-| `K <nr>` | Eigene Nachricht `<nr>` löschen |
+| `ND <nr>` / `K <nr>` | Nachricht `<nr>` löschen — bei privaten Nachrichten nur der Empfänger, bei Board-Bulletins nur der Autor (auch als `ND<nr>`/`K<nr>` ohne Leerzeichen) |
+
+Befehle mit Zahlenargument (`R`, `NLO`, `BLO`, `ND`, `K`) akzeptieren die Nummer wahlweise mit Leerzeichen (`R 5`) oder direkt angehängt (`R5`).
 
 ### Wetter (Home-Assistant-Integration)
 
