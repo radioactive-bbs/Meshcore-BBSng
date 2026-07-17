@@ -218,6 +218,12 @@ class WebAdminServer(BaseProtocol):
         # Explizit setzbar fuer den Betrieb hinter einem TLS-terminierenden Reverse-Proxy.
         self._secure_cookie_cfg = bool(web_cfg.get("secure_cookie", False))
         self._secure_cookie = self._secure_cookie_cfg
+        # Login-Lockout ist pro Client-IP – hinter einem Reverse-Proxy liefert
+        # request.remote sonst fuer alle Clients dieselbe Proxy-IP (gemeinsames
+        # Lockout). Nur mit explizit gesetztem web.trust_proxy_headers wird
+        # X-Forwarded-For statt request.remote herangezogen (sonst durch jeden
+        # Client faelschbar, der den Proxy umgeht) – Default: aus.
+        self._trust_proxy_headers = bool(web_cfg.get("trust_proxy_headers", False))
         # session-token -> (created_ts, csrf_token)
         self._sessions: dict[str, tuple[float, str]] = {}
         # IP -> (fail_count, window_start, locked_until) fuer den Login-Brute-Force-Schutz
@@ -459,8 +465,19 @@ class WebAdminServer(BaseProtocol):
                                  f"<body class='c64'>{body}</body></html>",
                             content_type="text/html")
 
+    def _client_ip(self, request: web.Request) -> str:
+        """Client-IP fuers Login-Lockout: request.remote (Standard), oder bei
+        web.trust_proxy_headers=true der erste Eintrag aus X-Forwarded-For
+        (gesetzt vom vorgelagerten TLS-Proxy) – siehe Kommentar in __init__."""
+        if self._trust_proxy_headers:
+            fwd = request.headers.get("X-Forwarded-For", "")
+            first = fwd.split(",")[0].strip()
+            if first:
+                return first
+        return request.remote or "?"
+
     async def do_login(self, request: web.Request) -> web.Response:
-        ip = request.remote or "?"
+        ip = self._client_ip(request)
         if self._login_blocked(ip):
             await asyncio.sleep(1.0)
             raise web.HTTPFound("/login?err=1")

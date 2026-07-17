@@ -86,6 +86,9 @@ REGISTRATION_CHALLENGE_DELAY = 600   # Sekunden bis zur Bestaetigungs-DM (Zeit
 REGISTRATION_CHALLENGE_TIMEOUT = 600  # Sekunden, die der Code nach Versand gueltig ist
 REGISTRATION_RATE_LIMIT  = 2    # max. akzeptierte 'add'-Anfragen ...
 REGISTRATION_RATE_WINDOW = 60.0  # ... pro Sekunden (Anti-Spam/Squatting-Flood)
+REGISTRATION_MAX_ATTEMPTS = 5   # falsche Bestaetigungscode-Versuche, danach Registrierung
+                                 # sofort verworfen (Defense-in-Depth zusaetzlich zur langsamen
+                                 # LoRa-Bandbreite als natuerlichem Rate-Limit)
 SENT_WAIT       = 5.0   # Sekunden auf RESP_CODE_SENT nach einem DM-Send
 
 
@@ -1298,7 +1301,7 @@ class MeshCoreServer(BaseProtocol):
         c = Contact(pubkey=bytes.fromhex(pubkey_hex), name=username, path=path)
         self._contacts[c.pubkey_prefix.hex()] = c
         self._pending_registrations[c.pubkey_prefix.hex()] = {
-            "username": username, "pubkey_hex": pubkey_hex, "code": None,
+            "username": username, "pubkey_hex": pubkey_hex, "code": None, "attempts": 0,
         }
         logger.info("ADD: %s wartet auf Pubkey-Bestaetigung, prefix=%s, path=%s",
                     username, c.pubkey_prefix.hex(), path.hex() if path else "leer")
@@ -1384,6 +1387,17 @@ class MeshCoreServer(BaseProtocol):
             return False
 
         if code.strip() != pending["code"]:
+            pending["attempts"] = pending.get("attempts", 0) + 1
+            if pending["attempts"] >= REGISTRATION_MAX_ATTEMPTS:
+                username = pending["username"]
+                self._pending_registrations.pop(prefix_hex, None)
+                self._contacts.pop(prefix_hex, None)
+                logger.warning("Registrierung von %s nach %d falschen Code-Versuchen verworfen",
+                               username, pending["attempts"])
+                await self._reply(bytes.fromhex(prefix_hex),
+                                   f"Zu viele falsche Versuche. Registrierung von '{username}' "
+                                   f"verworfen. Bitte erneut per 'add' versuchen.")
+                return True
             await self._reply(bytes.fromhex(prefix_hex),
                                "Falscher Code. Bitte den Bestaetigungscode aus der "
                                "vorherigen DM erneut senden.")

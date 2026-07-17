@@ -12,6 +12,10 @@ web:                            # Management-Weboberflaeche (SysOp)
   port: 8080                    # Zugriff dann per https://<Server-IP>:8080
   secure_cookie: true           # Session-Cookie nur ueber HTTPS senden (passt zu tls.enabled).
                                 # Auch bei TLS-terminierendem Reverse-Proxy true lassen.
+  trust_proxy_headers: false    # true NUR hinter einem TLS-terminierenden Reverse-Proxy: liest
+                                # die Client-IP fuers Login-Lockout aus X-Forwarded-For statt der
+                                # (sonst fuer alle Clients gleichen) Proxy-IP. Bei direktem Zugriff
+                                # (Default) unbedingt false lassen – sonst faelschbar per Header.
   tls:
     enabled: true               # HTTPS direkt im Server (kein Proxy noetig).
     cert_file: "data/web-cert.pem"   # Fehlt das Paar, wird beim Start ein self-signed Zertifikat
