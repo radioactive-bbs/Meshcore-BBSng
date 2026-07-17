@@ -1,6 +1,10 @@
 # Meshcore BBSng
 
+[![Latest Release](https://img.shields.io/github/v/release/radioactive-bbs/Meshcore-BBSng?label=Release&color=blue)](https://github.com/radioactive-bbs/Meshcore-BBSng/releases/latest)
+
 Ein Bulletin-Board-System (BBS) für [MeshCore](https://meshcore.io/)-Mesh-Netzwerke — erreichbar über das MeshCore-Funknetz (Kanal-Broadcast + Direktnachrichten), mit einer eigenen HTTPS-Web-Admin-Oberfläche zur Verwaltung.
+
+→ [Alle Release-Notes](https://github.com/radioactive-bbs/Meshcore-BBSng/releases)
 
 Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) auf moderner MeshCore-LoRa-Hardware.
 
