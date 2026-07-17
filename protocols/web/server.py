@@ -38,6 +38,7 @@ WEBCONFIG_PATH = "config/webconfig.yaml"
 SESSION_COOKIE = "nnpbbs_session"
 SESSION_TTL = 12 * 3600  # 12h
 ADMIN_USERNAME_RE = re.compile(r'^[A-Za-z0-9_.-]{3,32}$')  # weitere Admin-Konten
+MIN_PASSWORD_LEN = 12  # Mindestlaenge fuer alle Web-Admin-Passwoerter (eigenes + neue Konten)
 
 # Login-Brute-Force-Schutz: max. Fehlversuche je IP innerhalb des Fensters,
 # danach Sperre. Ergaenzt die 1s-Verzoegerung (die allein parallele Versuche
@@ -732,8 +733,8 @@ class WebAdminServer(BaseProtocol):
         <h2>Eigenes Passwort ({_esc(self._current_username(request) or 'admin')})</h2>
         <form method="post" action="/password" style="display:flex;gap:8px;flex-wrap:wrap">
           <input type="password" name="current" placeholder="Aktuelles Passwort" required>
-          <input type="password" name="new1" placeholder="Neues Passwort (min. 8)" minlength="8" required>
-          <input type="password" name="new2" placeholder="Neues Passwort wiederholen" minlength="8" required>
+          <input type="password" name="new1" placeholder="Neues Passwort (min. {MIN_PASSWORD_LEN})" minlength="{MIN_PASSWORD_LEN}" required>
+          <input type="password" name="new2" placeholder="Neues Passwort wiederholen" minlength="{MIN_PASSWORD_LEN}" required>
           <button>Passwort aendern</button>
         </form>
         <p style="color:var(--dim)">Wird als scrypt-Hash in <code>config/webconfig.yaml</code>
@@ -742,7 +743,7 @@ class WebAdminServer(BaseProtocol):
         {self._admins_table()}
         <form method="post" action="/admins/add" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
           <input name="username" placeholder="Benutzername" maxlength="32" required>
-          <input type="password" name="password" placeholder="Initiales Passwort (min. 8)" minlength="8" required>
+          <input type="password" name="password" placeholder="Initiales Passwort (min. {MIN_PASSWORD_LEN})" minlength="{MIN_PASSWORD_LEN}" required>
           <button>Konto anlegen</button>
         </form>
         <p style="color:var(--dim)">Zusaetzliche Admins mit vollem Zugriff auf dieses Web-Panel
@@ -777,8 +778,11 @@ class WebAdminServer(BaseProtocol):
         if not ADMIN_USERNAME_RE.match(username):
             return self._redirect("/settings", err="Benutzername: 3-32 Zeichen, "
                                                      "Buchstaben/Zahlen/_-. erlaubt")
-        if len(password) < 8:
-            return self._redirect("/settings", err="Passwort muss mindestens 8 Zeichen haben")
+        if len(password) < MIN_PASSWORD_LEN:
+            return self._redirect("/settings", err=f"Passwort muss mindestens {MIN_PASSWORD_LEN} Zeichen haben")
+        if crypto.is_weak_password(password, extra_forbidden=(username, self.config.get("callsign", ""))):
+            return self._redirect("/settings", err="Passwort ist zu einfach/verbreitet – bitte ein "
+                                                     "anderes waehlen")
         if username in self._admins:
             return self._redirect("/settings", err=f"Konto '{username}' existiert bereits")
         self._admins[username] = crypto.hash_password(password)
@@ -888,8 +892,11 @@ class WebAdminServer(BaseProtocol):
         username = self._current_username(request) or "admin"
         if not self._check_login(username, current):
             return self._redirect("/settings", err="Aktuelles Passwort ist falsch")
-        if len(new1) < 8:
-            return self._redirect("/settings", err="Neues Passwort muss mindestens 8 Zeichen haben")
+        if len(new1) < MIN_PASSWORD_LEN:
+            return self._redirect("/settings", err=f"Neues Passwort muss mindestens {MIN_PASSWORD_LEN} Zeichen haben")
+        if crypto.is_weak_password(new1, extra_forbidden=(username, self.config.get("callsign", ""))):
+            return self._redirect("/settings", err="Neues Passwort ist zu einfach/verbreitet – bitte "
+                                                     "ein anderes waehlen")
         if new1 != new2:
             return self._redirect("/settings", err="Neue Passwoerter stimmen nicht ueberein")
         digest = crypto.hash_password(new1)

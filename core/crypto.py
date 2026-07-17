@@ -63,8 +63,38 @@ def decrypt(value: str, key: bytes) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Passwort-Hashing (Web-Admin) – gesalzenes scrypt, mit Legacy-SHA256-Fallback
+# Passwort-Blockliste (Web-Admin) – Basisfilter gegen die offensichtlichsten/
+# haeufigsten Passwoerter. Keine vollstaendige Staerkepruefung (kein zxcvbn),
+# nur ein grobes Netz VOR der Mindestlaengen-Pruefung.
 # ---------------------------------------------------------------------------
+_COMMON_WEAK_PASSWORDS = {
+    "123456", "123456789", "1234567890", "12345678", "password", "passwort",
+    "qwerty", "qwertyuiop", "111111", "123123", "abc123", "1234567",
+    "password1", "passwort1", "iloveyou", "letmein", "welcome", "monkey",
+    "dragon", "football", "1q2w3e4r", "administrator", "changeme",
+    "sonnenschein", "admin1234", "meshcore", "meshcorebbs", "nnpbbs", "nnp-bbs",
+    "adminadmin", "sysopsysop", "funkfunkfunk",
+}
+
+
+def is_weak_password(password: str, extra_forbidden: tuple = ()) -> bool:
+    """True, wenn das Passwort in der Blockliste steht (case-insensitive),
+    nur aus einem einzigen wiederholten Zeichen besteht (z.B. 'aaaaaaaaaaaa')
+    oder eine simple auf-/absteigende Ziffernfolge ist (z.B. '123456789012').
+    extra_forbidden: zusaetzliche verbotene Werte, z.B. der eigene Benutzername
+    oder das BBS-Rufzeichen (case-insensitive verglichen)."""
+    pw = password.strip().lower()
+    if pw in _COMMON_WEAK_PASSWORDS:
+        return True
+    if len(set(pw)) <= 1:
+        return True
+    if pw.isdigit():
+        ascending = "".join(str(i % 10) for i in range(len(pw)))
+        descending = "".join(str((9 - i) % 10) for i in range(len(pw)))
+        if pw in (ascending, descending):
+            return True
+    return pw in {str(f).strip().lower() for f in extra_forbidden if f}
+
 
 def hash_password(password: str) -> str:
     """Erzeugt einen gesalzenen scrypt-Hash im Format

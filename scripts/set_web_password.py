@@ -22,7 +22,7 @@ import yaml  # noqa: E402
 from core import crypto  # noqa: E402
 
 WEBCONFIG_PATH = os.path.join(_ROOT, "config", "webconfig.yaml")
-MIN_LEN = 8
+MIN_LEN = 12
 
 
 def _read_password() -> str:
@@ -55,6 +55,9 @@ def main() -> int:
     pw = _read_password()
     if len(pw) < MIN_LEN:
         print(f"Fehler: Passwort muss mindestens {MIN_LEN} Zeichen haben.", file=sys.stderr)
+        return 1
+    if crypto.is_weak_password(pw, extra_forbidden=("admin",)):
+        print("Fehler: Passwort ist zu einfach/verbreitet – bitte ein anderes waehlen.", file=sys.stderr)
         return 1
 
     try:
