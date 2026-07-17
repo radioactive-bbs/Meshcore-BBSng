@@ -1,6 +1,8 @@
 callsign: "N0CALL"
 sysop: "N0CALL"
 sysop_mail: ""
+co_sysops: []                  # Weitere Rufzeichen mit SysOp-Rechten (z.B. Nachrichten
+                                # loeschen). Bearbeitbar unter Web-Admin -> Einstellungen.
 qth: ""
 locator: ""
 # Betreiberdaten (Rufzeichen, QTH, ...) gehoeren NICHT hierher, sondern in
@@ -24,6 +26,9 @@ web:                            # Management-Weboberflaeche (SysOp)
   # gesetzt – per scripts/set_web_password.py oder in der Web-UI (Einstellungen).
   # Ohne gesetztes Passwort erzeugt der erste Start ein Zufallspasswort und legt es in
   # data/initial-web-password.txt (0600) ab.
+  # Weitere Admin-Konten (username -> scrypt-Hash) werden NUR ueber die Web-UI
+  # (Einstellungen -> Weitere Admin-Konten) angelegt, landen ebenfalls in
+  # config/webconfig.yaml (web.admins) und NICHT hier.
 
 storage:
   path: "data/bbs.db"

@@ -53,6 +53,8 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 - Debug-Ansicht mit Live-Journal-Log (journalctl-Anbindung)
 - Datenbank-Backup-Download (konsistenter SQLite-Snapshot)
 - Eigenes self-signed HTTPS-Zertifikat (automatisch erzeugt) oder Import eines eigenen Zertifikats
+- **Co-SysOps** — weitere Rufzeichen mit SysOp-Rechten im Mesh (z. B. Nachrichten löschen), unter *Einstellungen* pflegbar
+- **Mehrere Admin-Konten** — zusätzlich zum Standardkonto `admin` beliebig viele weitere Web-Admin-Logins mit eigenem Benutzernamen/Passwort anlegbar (gleichberechtigt, keine Rollen), unter *Einstellungen* verwaltbar
 
 ### MeshCore-Protokolldetails
 - **Region-Scoping** — alle Flood-Pakete (Kanal-Broadcasts, Flood-DMs, Adverts) werden mit einem Region-Code versehen, der auf Repeatern gefiltert werden kann (Firmware ≥ v1.15 für persistenten Default-Scope)
@@ -85,7 +87,7 @@ Alle Befehle laufen über den MeshCore-Kanal (Broadcast) bzw. Direktnachrichten.
 | `R <nr>` | Nachricht/Board-Eintrag `<nr>` lesen |
 | `S TO\|Betreff\|Text` | Private Nachricht senden |
 | `SB Thema\|Text` | Board-Nachricht (Bulletin) veröffentlichen |
-| `ND <nr>` / `K <nr>` | Nachricht `<nr>` löschen — bei privaten Nachrichten nur der Empfänger, bei Board-Bulletins nur der Autor (auch als `ND<nr>`/`K<nr>` ohne Leerzeichen) |
+| `ND <nr>` / `K <nr>` | Nachricht `<nr>` löschen — bei privaten Nachrichten nur der Empfänger, bei Board-Bulletins nur der Autor, zusätzlich immer der SysOp und die konfigurierten Co-SysOps (auch als `ND<nr>`/`K<nr>` ohne Leerzeichen) |
 
 Befehle mit Zahlenargument (`R`, `NLO`, `BLO`, `ND`, `K`) akzeptieren die Nummer wahlweise mit Leerzeichen (`R 5`) oder direkt angehängt (`R5`).
 

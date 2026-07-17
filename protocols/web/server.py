@@ -28,6 +28,7 @@ from aiohttp import web
 from core import crypto, webtls
 from core.bbs import FEATURES
 from core.message import Message
+from core.validation import USERNAME_RE
 from protocols.base import BaseProtocol
 from storage.database import Database
 
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 WEBCONFIG_PATH = "config/webconfig.yaml"
 SESSION_COOKIE = "nnpbbs_session"
 SESSION_TTL = 12 * 3600  # 12h
+ADMIN_USERNAME_RE = re.compile(r'^[A-Za-z0-9_.-]{3,32}$')  # weitere Admin-Konten
 
 # Login-Brute-Force-Schutz: max. Fehlversuche je IP innerhalb des Fensters,
 # danach Sperre. Ergaenzt die 1s-Verzoegerung (die allein parallele Versuche
@@ -206,6 +208,11 @@ class WebAdminServer(BaseProtocol):
         self.password = str(web_cfg.get("password", "nnp-bbs"))
         # In der UI/Installer gesetztes Passwort (scrypt-Hash aus webconfig.yaml) hat Vorrang
         self.password_hash = str(web_cfg.get("password_hash", "") or "")
+        # Weitere, namentliche Admin-Konten: username -> scrypt-Hash (web.admins in
+        # webconfig.yaml). Das urspruengliche/legacy Konto bleibt fest unter dem
+        # Namen "admin" ueber self.password_hash erreichbar (siehe _check_login) -
+        # bestehende Installationen brauchen keine Migration.
+        self._admins: dict[str, str] = dict(web_cfg.get("admins", {}) or {})
         # TLS direkt im Server (aiohttp ssl_context). cert/key liegen in data/ (nicht im Repo);
         # fehlen sie, wird beim Start ein self-signed Zertifikat erzeugt.
         tls_cfg = web_cfg.get("tls", {}) or {}
@@ -224,8 +231,8 @@ class WebAdminServer(BaseProtocol):
         # X-Forwarded-For statt request.remote herangezogen (sonst durch jeden
         # Client faelschbar, der den Proxy umgeht) – Default: aus.
         self._trust_proxy_headers = bool(web_cfg.get("trust_proxy_headers", False))
-        # session-token -> (created_ts, csrf_token)
-        self._sessions: dict[str, tuple[float, str]] = {}
+        # session-token -> (created_ts, csrf_token, username)
+        self._sessions: dict[str, tuple[float, str, str]] = {}
         # IP -> (fail_count, window_start, locked_until) fuer den Login-Brute-Force-Schutz
         self._login_fails: dict[str, tuple[int, float, float]] = {}
         self._runner: Optional[web.AppRunner] = None
@@ -246,6 +253,9 @@ class WebAdminServer(BaseProtocol):
             web.get("/settings", self.page_settings),
             web.post("/settings", self.do_settings),
             web.post("/features", self.do_features),
+            web.post("/cosysops", self.do_cosysops),
+            web.post("/admins/add", self.do_admin_add),
+            web.post("/admins/delete", self.do_admin_delete),
             web.post("/operation", self.do_operation),
             web.post("/password", self.do_password),
             web.post("/tls/import", self.do_tls_import),
@@ -324,6 +334,22 @@ class WebAdminServer(BaseProtocol):
         """CSRF-Token der aktuellen Session (leer, wenn keine gueltige Session)."""
         entry = self._sessions.get(request.cookies.get(SESSION_COOKIE, ""))
         return entry[1] if entry else ""
+
+    def _current_username(self, request: web.Request) -> str:
+        """Benutzername der aktuellen Session ('' wenn keine gueltige Session)."""
+        entry = self._sessions.get(request.cookies.get(SESSION_COOKIE, ""))
+        return entry[2] if entry else ""
+
+    def _check_login(self, username: str, candidate: str) -> bool:
+        """Prueft username+Passwort. 'admin' ist das feste Legacy-Konto (siehe
+        _check_password, inkl. SHA256->scrypt-Migration); alle anderen Namen werden
+        gegen web.admins (Web-Admin: Einstellungen -> Co-SysOps/Weitere Admin-Konten)
+        geprueft."""
+        username = username.strip()
+        if username == "admin" or not username:
+            return self._check_password(candidate)
+        stored = self._admins.get(username)
+        return bool(stored) and crypto.verify_password(candidate, stored)
 
     def _check_password(self, candidate: str) -> bool:
         """Prueft das Passwort: gesetzter scrypt-Hash (webconfig/Installer) vor
@@ -448,6 +474,12 @@ class WebAdminServer(BaseProtocol):
             notice = "<p class='err-line'>?ACCESS DENIED&nbsp; ERROR</p>"
         elif "msg" in request.query:
             notice = f"<p class='ok-line'>{_esc(request.query['msg']).upper()}</p>"
+        # Benutzername-Feld nur zeigen, wenn ueberhaupt weitere Admin-Konten existieren -
+        # beim Standard-Einzelkonto ("admin") bleibt die Login-Zeile unveraendert.
+        user_field = ("<input name='username' placeholder='user' autofocus "
+                      "autocomplete='username' style='width:5em'>&nbsp;"
+                      if self._admins else "")
+        pw_autofocus = "" if self._admins else " autofocus"
         body = f"""<div class="c64-screen">
           <pre class="logo">{LOGO}</pre>
           <p class="boot">**** MESHCORE BBSng SYSOP TERMINAL V2 ****</p>
@@ -455,7 +487,7 @@ class WebAdminServer(BaseProtocol):
           <p class="ready">READY.</p>{notice}
           <form method="post" action="/login">
             <span>LOAD&nbsp;"ADMIN",8,1:&nbsp;</span>
-            <input type="password" name="password" autofocus autocomplete="current-password">
+            {user_field}<input type="password" name="password"{pw_autofocus} autocomplete="current-password">
             <span class="cursor"></span>
             <button>RUN</button>
           </form></div>"""
@@ -482,13 +514,14 @@ class WebAdminServer(BaseProtocol):
             await asyncio.sleep(1.0)
             raise web.HTTPFound("/login?err=1")
         form = await request.post()
-        if not self._check_password(str(form.get("password", ""))):
+        username = str(form.get("username", "")).strip() or "admin"
+        if not self._check_login(username, str(form.get("password", ""))):
             self._record_login_fail(ip)
             await asyncio.sleep(1.0)  # einfache Brute-Force-Bremse (zusaetzlich zum IP-Lockout)
             raise web.HTTPFound("/login?err=1")
         self._clear_login_fails(ip)
         token = pysecrets.token_hex(32)
-        self._sessions[token] = (time.time(), pysecrets.token_hex(32))
+        self._sessions[token] = (time.time(), pysecrets.token_hex(32), username)
         resp = web.HTTPFound("/")
         resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="Strict",
                         max_age=SESSION_TTL, secure=self._secure_cookie)
@@ -518,7 +551,7 @@ class WebAdminServer(BaseProtocol):
         warn = ""
         if os.path.exists(self._initial_pw_path()):
             warn = ("<div class='flash err'>Automatisch erzeugtes Erststart-Passwort aktiv. "
-                    "Bitte unter <a href='/settings'>Einstellungen → Admin-Passwort</a> ein eigenes "
+                    "Bitte unter <a href='/settings'>Einstellungen → Eigenes Passwort</a> ein eigenes "
                     "setzen – danach wird die Passwortdatei geloescht.</div>")
         if self.config.get("maintenance", {}).get("enabled"):
             warn += ("<div class='flash err'>\U0001f6e0 Wartungsmodus aktiv – die BBS beantwortet "
@@ -534,7 +567,7 @@ class WebAdminServer(BaseProtocol):
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{_esc(title)} – Meshcore BBSng</title><style>{CSS}</style></head><body>
 <nav><span class="brand">📻 Meshcore BBSng</span>{nav_html}
-<span class="right"><a href="/logout">Abmelden</a></span></nav>
+<span class="right">{(_esc(self._current_username(request)) + '&nbsp;·&nbsp;') if self._admins else ''}<a href="/logout">Abmelden</a></span></nav>
 <main>{warn}{flash}<h1>{_esc(title)}</h1>{body}</main></body></html>"""
         return web.Response(text=page, content_type="text/html")
 
@@ -685,7 +718,18 @@ class WebAdminServer(BaseProtocol):
         <p style="color:var(--dim)">Wirkt <b>sofort</b>: Deaktivierte Funktionen verschwinden aus
         den Menues und die zugehoerigen Befehle antworten mit "Unbekannt".
         REMOVE (Abmelden) bleibt immer aktiv.</p>
-        <h2>Admin-Passwort</h2>
+        <h2>Co-SysOps</h2>
+        <form method="post" action="/cosysops">
+          <div class="field" style="align-items:flex-start"><label>Rufzeichen (Komma-getrennt)</label>
+            <input name="co_sysops" style="width:320px" maxlength="200"
+                   value="{_esc(', '.join(self.config.get('co_sysops') or []))}"
+                   placeholder="z.B. DL1ABC, DL2XYZ"></div>
+          <p><button>Co-SysOps speichern</button></p>
+        </form>
+        <p style="color:var(--dim)">Diese Rufzeichen erhalten im Mesh dieselben SysOp-Rechte wie
+        das oben eingetragene SysOp-Rufzeichen (aktuell: Nachrichten anderer User loeschen).
+        Wirkt sofort.</p>
+        <h2>Eigenes Passwort ({_esc(self._current_username(request) or 'admin')})</h2>
         <form method="post" action="/password" style="display:flex;gap:8px;flex-wrap:wrap">
           <input type="password" name="current" placeholder="Aktuelles Passwort" required>
           <input type="password" name="new1" placeholder="Neues Passwort (min. 8)" minlength="8" required>
@@ -693,13 +737,74 @@ class WebAdminServer(BaseProtocol):
           <button>Passwort aendern</button>
         </form>
         <p style="color:var(--dim)">Wird als scrypt-Hash in <code>config/webconfig.yaml</code>
-        gespeichert und gilt sofort – alle Sitzungen werden abgemeldet.</p>
+        gespeichert und gilt sofort – nur die eigenen Sitzungen werden abgemeldet.</p>
+        <h2>Weitere Admin-Konten ({len(self._admins)})</h2>
+        {self._admins_table()}
+        <form method="post" action="/admins/add" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+          <input name="username" placeholder="Benutzername" maxlength="32" required>
+          <input type="password" name="password" placeholder="Initiales Passwort (min. 8)" minlength="8" required>
+          <button>Konto anlegen</button>
+        </form>
+        <p style="color:var(--dim)">Zusaetzliche Admins mit vollem Zugriff auf dieses Web-Panel
+        (keine Rollen/Rechtestufen). Jeder Admin kann sein eigenes Passwort oben selbst aendern.
+        Das urspruengliche Konto "admin" kann hier nicht entfernt werden (bleibt immer als
+        Fallback erreichbar).</p>
         <h2>Dienst</h2>
         <form method="post" action="/restart"
               onsubmit="return confirm('BBS wirklich neu starten? Verbindungen werden getrennt.')">
           <button class="danger">BBS neu starten</button>
         </form>"""
         return self._page(request, "Einstellungen", "/settings", body)
+
+    def _admins_table(self) -> str:
+        if not self._admins:
+            return "<p style='color:var(--dim)'>Keine weiteren Admin-Konten.</p>"
+        rows = "".join(f"""<tr><td class='mono'>{_esc(name)}</td>
+              <td><form class='inline' method='post' action='/admins/delete'
+                        onsubmit="return confirm('Admin-Konto {_esc(name)} wirklich entfernen?')">
+                    <input type='hidden' name='username' value='{_esc(name)}'>
+                    <button class='small danger'>Entfernen</button></form></td></tr>"""
+                        for name in sorted(self._admins))
+        return f"<table><tr><th>Benutzername</th><th></th></tr>{rows}</table>"
+
+    async def do_admin_add(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        username = str(form.get("username", "")).strip()
+        password = str(form.get("password", ""))
+        if username.lower() == "admin":
+            return self._redirect("/settings", err="'admin' ist das feste Standardkonto, "
+                                                     "bitte einen anderen Namen waehlen")
+        if not ADMIN_USERNAME_RE.match(username):
+            return self._redirect("/settings", err="Benutzername: 3-32 Zeichen, "
+                                                     "Buchstaben/Zahlen/_-. erlaubt")
+        if len(password) < 8:
+            return self._redirect("/settings", err="Passwort muss mindestens 8 Zeichen haben")
+        if username in self._admins:
+            return self._redirect("/settings", err=f"Konto '{username}' existiert bereits")
+        self._admins[username] = crypto.hash_password(password)
+        overlay = self._load_overlay()
+        overlay.setdefault("web", {})["admins"] = dict(self._admins)
+        self._save_overlay(overlay)
+        self.config.setdefault("web", {})["admins"] = dict(self._admins)
+        logger.info("Web-Admin: Admin-Konto '%s' angelegt", username)
+        return self._redirect("/settings", ok=f"Admin-Konto '{username}' angelegt")
+
+    async def do_admin_delete(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        username = str(form.get("username", "")).strip()
+        if username not in self._admins:
+            return self._redirect("/settings", err=f"Konto '{username}' nicht gefunden")
+        del self._admins[username]
+        overlay = self._load_overlay()
+        overlay.setdefault("web", {})["admins"] = dict(self._admins)
+        self._save_overlay(overlay)
+        self.config.setdefault("web", {})["admins"] = dict(self._admins)
+        # Sitzungen dieses Kontos sofort beenden
+        stale = [tok for tok, entry in self._sessions.items() if entry[2] == username]
+        for tok in stale:
+            del self._sessions[tok]
+        logger.info("Web-Admin: Admin-Konto '%s' entfernt", username)
+        return self._redirect("/settings", ok=f"Admin-Konto '{username}' entfernt")
 
     def _features_checkboxes(self) -> str:
         current = self.config.get("features", {})
@@ -720,6 +825,21 @@ class WebAdminServer(BaseProtocol):
         off = [FEATURES[k][0].split(" (")[0] for k, on in features.items() if not on]
         logger.info("Web-Admin: Funktionen geaendert, deaktiviert: %s", ", ".join(off) or "keine")
         msg = "Funktionen gespeichert." + (f" Deaktiviert: {', '.join(off)}." if off else " Alle aktiv.")
+        return self._redirect("/settings", ok=msg)
+
+    async def do_cosysops(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        raw = str(form.get("co_sysops", ""))
+        names = [n.strip().upper() for n in raw.split(",") if n.strip()]
+        invalid = [n for n in names if not USERNAME_RE.match(n)]
+        if invalid:
+            return self._redirect("/settings", err=f"Ungueltige Rufzeichen: {', '.join(invalid)}")
+        overlay = self._load_overlay()
+        overlay["co_sysops"] = names
+        self._save_overlay(overlay)
+        self.config["co_sysops"] = names  # wirkt sofort
+        logger.info("Web-Admin: Co-SysOps geaendert: %s", ", ".join(names) or "keine")
+        msg = f"Co-SysOps gespeichert: {', '.join(names)}." if names else "Co-SysOps entfernt."
         return self._redirect("/settings", ok=msg)
 
     async def do_operation(self, request: web.Request) -> web.Response:
@@ -759,11 +879,14 @@ class WebAdminServer(BaseProtocol):
             "Content-Disposition": f'attachment; filename="nnp-bbs-{stamp}.db"'})
 
     async def do_password(self, request: web.Request) -> web.Response:
+        """Aendert das Passwort des GERADE ANGEMELDETEN Kontos (self._current_username) -
+        bei mehreren Admin-Konten also nicht zwingend 'admin'."""
         form = await request.post()
         current = str(form.get("current", ""))
         new1 = str(form.get("new1", ""))
         new2 = str(form.get("new2", ""))
-        if not self._check_password(current):
+        username = self._current_username(request) or "admin"
+        if not self._check_login(username, current):
             return self._redirect("/settings", err="Aktuelles Passwort ist falsch")
         if len(new1) < 8:
             return self._redirect("/settings", err="Neues Passwort muss mindestens 8 Zeichen haben")
@@ -771,18 +894,26 @@ class WebAdminServer(BaseProtocol):
             return self._redirect("/settings", err="Neue Passwoerter stimmen nicht ueberein")
         digest = crypto.hash_password(new1)
         overlay = self._load_overlay()
-        overlay.setdefault("web", {})["password_hash"] = digest
+        if username == "admin":
+            overlay.setdefault("web", {})["password_hash"] = digest
+            self.password_hash = digest
+            self.config.setdefault("web", {})["password_hash"] = digest
+            # Erststart-Passwortdatei entfernen – ab jetzt gilt das selbst gesetzte Passwort
+            try:
+                os.remove(self._initial_pw_path())
+                logger.info("Erststart-Passwortdatei entfernt")
+            except OSError:
+                pass
+        else:
+            self._admins[username] = digest
+            overlay.setdefault("web", {})["admins"] = dict(self._admins)
+            self.config.setdefault("web", {})["admins"] = dict(self._admins)
         self._save_overlay(overlay)
-        self.password_hash = digest
-        self.config.setdefault("web", {})["password_hash"] = digest
-        self._sessions.clear()  # alle Sitzungen abmelden
-        # Erststart-Passwortdatei entfernen – ab jetzt gilt das selbst gesetzte Passwort
-        try:
-            os.remove(self._initial_pw_path())
-            logger.info("Erststart-Passwortdatei entfernt")
-        except OSError:
-            pass
-        logger.info("Web-Admin: Passwort geaendert")
+        # Nur die Sitzungen DIESES Kontos abmelden, nicht die anderer Admins.
+        stale = [tok for tok, entry in self._sessions.items() if entry[2] == username]
+        for tok in stale:
+            del self._sessions[tok]
+        logger.info("Web-Admin: Passwort geaendert (%s)", username)
         from urllib.parse import quote
         return web.HTTPFound("/login?msg=" + quote("Passwort geaendert – bitte neu anmelden."))
 

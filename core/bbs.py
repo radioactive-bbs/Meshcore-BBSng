@@ -313,16 +313,25 @@ class BBSCore:
         msg_id = await self.db.save_message(msg)
         return [f"Bulletin #{msg_id} gespeichert. 73!"]
 
+    def _is_sysop(self, callsign: str) -> bool:
+        """True, wenn callsign der primaere SysOp oder einer der konfigurierten
+        Co-SysOps ist (config.sysop / config.co_sysops, live aus der Config -
+        Web-Admin: Einstellungen)."""
+        caller = callsign.upper()
+        if caller == str(self.config.get("sysop", "")).upper():
+            return True
+        co_sysops = self.config.get("co_sysops") or []
+        return caller in {str(c).upper() for c in co_sysops}
+
     async def cmd_kill(self, callsign: str, msg_id: int) -> list[str]:
         msg = await self.db.get_message(msg_id)
         if not msg:
             return [f"Nachricht #{msg_id} nicht gefunden."]
         caller = callsign.upper()
-        sysop_call = self.config.get("sysop", "").upper()
         # Private Nachricht: gehoert dem Empfaenger (sein Postfach) -- Board-Bulletin:
         # gehoert dem Autor (kein Einzelempfaenger, to_call ist "ALL").
         owner = msg.to_call.upper() if msg.msg_type == "P" else msg.from_call.upper()
-        if caller != owner and caller != sysop_call:
+        if caller != owner and not self._is_sysop(caller):
             return ["Keine Berechtigung."]
         await self.db.delete_message(msg_id)
         return [f"Nachricht #{msg_id} geloescht."]
