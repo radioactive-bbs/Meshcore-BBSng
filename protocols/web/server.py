@@ -270,6 +270,10 @@ class WebAdminServer(BaseProtocol):
             web.post("/users/block", self.do_user_block),
             web.post("/users/blockkey", self.do_block_pubkey),
             web.post("/users/unblock", self.do_unblock),
+            web.post("/users/ackgrant", self.do_ack_grant),
+            web.post("/users/ackrevoke", self.do_ack_revoke),
+            web.post("/users/sendlock", self.do_send_lock),
+            web.post("/users/sendunlock", self.do_send_unlock),
             web.get("/messages", self.page_messages),
             web.get("/messages/new", self.page_message_new),
             web.post("/messages/new", self.do_message_new),
@@ -1094,6 +1098,33 @@ class WebAdminServer(BaseProtocol):
             node = live.get(prefix)
             path = node["path"] if node else ""
             seen = _fmt_age(node["last_seen_age"]) if node and node["last_seen_age"] is not None else "-"
+
+            # Senderecht (Pubkey-Sicherheitshinweis): dauerhafte Sperre (send_locked)
+            # sticht eine evtl. vorhandene Bestaetigung, siehe _pubkey_ack_gate.
+            if c.get("send_locked"):
+                ack_badge = "<span class='err'>\U0001f512 Gesperrt</span>"
+                ack_actions = f"""<form class='inline' method='post' action='/users/sendunlock'>
+                        <input type='hidden' name='name' value='{_esc(c['name'])}'>
+                        <button class='small ghost'>Entsperren</button></form>"""
+            elif c.get("pubkey_ack_confirmed"):
+                ack_badge = "<span class='ok'>✓ Bestaetigt</span>"
+                ack_actions = f"""<form class='inline' method='post' action='/users/ackrevoke'>
+                        <input type='hidden' name='name' value='{_esc(c['name'])}'>
+                        <button class='small ghost'>Entziehen</button></form>
+                      <form class='inline' method='post' action='/users/sendlock'
+                            onsubmit="return confirm('{_esc(c['name'])} das Senden dauerhaft sperren?')">
+                        <input type='hidden' name='name' value='{_esc(c['name'])}'>
+                        <button class='small danger'>Dauerhaft sperren</button></form>"""
+            else:
+                ack_badge = "<span class='warn'>✗ Unbestaetigt</span>"
+                ack_actions = f"""<form class='inline' method='post' action='/users/ackgrant'>
+                        <input type='hidden' name='name' value='{_esc(c['name'])}'>
+                        <button class='small ghost'>Manuell bestaetigen</button></form>
+                      <form class='inline' method='post' action='/users/sendlock'
+                            onsubmit="return confirm('{_esc(c['name'])} das Senden dauerhaft sperren?')">
+                        <input type='hidden' name='name' value='{_esc(c['name'])}'>
+                        <button class='small danger'>Dauerhaft sperren</button></form>"""
+
             rows.append(f"""<tr>
               <td><b>{_esc(c['name'])}</b><br><span class='mono' style='color:var(--dim)'>{_esc(prefix)}…</span></td>
               <td>{_fmt_ts(c['added_at'])}</td>
@@ -1103,6 +1134,7 @@ class WebAdminServer(BaseProtocol):
                     <input type='hidden' name='name' value='{_esc(c['name'])}'>
                     <input name='mail' value='{_esc(c['mail'])}' placeholder='Mail' style='width:150px'>
                     <button class='small ghost'>OK</button></form></td>
+              <td>{ack_badge}<br>{ack_actions}</td>
               <td><form class='inline' method='post' action='/users/delete'
                         onsubmit="return confirm('{_esc(c['name'])} wirklich entfernen?')">
                     <input type='hidden' name='name' value='{_esc(c['name'])}'>
@@ -1113,7 +1145,7 @@ class WebAdminServer(BaseProtocol):
                     <button class='small ghost'>Sperren</button></form></td>
             </tr>""")
         mesh_table = (f"<table><tr><th>Name / Pubkey</th><th>Registriert</th><th>Zuletzt gesehen</th>"
-                      f"<th>Pfad</th><th>Mail</th><th></th></tr>{''.join(rows)}</table>"
+                      f"<th>Pfad</th><th>Mail</th><th>Senderecht</th><th></th></tr>{''.join(rows)}</table>"
                       if rows else "<p>Keine registrierten MeshCore-User.</p>")
 
         blocked = await self.db.get_blocked()
@@ -1209,6 +1241,45 @@ class WebAdminServer(BaseProtocol):
         name = str(form.get("name", "")).strip()
         await self.db.set_mc_contact_mail(name, str(form.get("mail", "")))
         return self._redirect("/users", ok=f"Mail fuer {name.upper()} gespeichert")
+
+    async def do_ack_grant(self, request: web.Request) -> web.Response:
+        """Setzt das Senderecht manuell (ohne OK-Challenge des Users) -- z.B. fuer
+        Bestandsuser, die der SysOp bereits anderweitig verifiziert hat."""
+        form = await request.post()
+        name = str(form.get("name", "")).strip()
+        if not await self.db.find_mc_contact_by_name(name):
+            return self._redirect("/users", err=f"{name} nicht gefunden")
+        await self.db.set_pubkey_ack_confirmed(name, True)
+        return self._redirect("/users", ok=f"Senderecht fuer {name.upper()} gesetzt")
+
+    async def do_ack_revoke(self, request: web.Request) -> web.Response:
+        """Entzieht das Senderecht wieder -- der User muss die OK-Challenge beim
+        naechsten S/SB-Versuch erneut durchlaufen (kein dauerhaftes Verbot)."""
+        form = await request.post()
+        name = str(form.get("name", "")).strip()
+        if not await self.db.find_mc_contact_by_name(name):
+            return self._redirect("/users", err=f"{name} nicht gefunden")
+        await self.db.set_pubkey_ack_confirmed(name, False)
+        return self._redirect("/users", ok=f"Senderecht fuer {name.upper()} entzogen")
+
+    async def do_send_lock(self, request: web.Request) -> web.Response:
+        """Dauerhafte Sperre des Senderechts -- staerker als ackrevoke: laesst sich
+        NICHT durch eine erneute OK-Challenge des Users umgehen, siehe
+        _pubkey_ack_gate in protocols/meshcore/server.py."""
+        form = await request.post()
+        name = str(form.get("name", "")).strip()
+        if not await self.db.find_mc_contact_by_name(name):
+            return self._redirect("/users", err=f"{name} nicht gefunden")
+        await self.db.set_send_locked(name, True)
+        return self._redirect("/users", ok=f"{name.upper()} dauerhaft vom Senden gesperrt")
+
+    async def do_send_unlock(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        name = str(form.get("name", "")).strip()
+        if not await self.db.find_mc_contact_by_name(name):
+            return self._redirect("/users", err=f"{name} nicht gefunden")
+        await self.db.set_send_locked(name, False)
+        return self._redirect("/users", ok=f"Dauerhafte Sperre fuer {name.upper()} aufgehoben")
 
     # ------------------------------------------------------------------
     # Nachrichten

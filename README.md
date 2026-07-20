@@ -112,9 +112,15 @@ Befehle mit Zahlenargument (`R`, `NLO`, `BLO`, `ND`, `K`) akzeptieren die Nummer
 | `LU` | Liste aller registrierten Nutzer |
 | `PING` | Liste bekannter Repeater |
 | `PING <Name>` | Traceroute zu einem Node/Repeater — Pfad, Laufzeit, SNR je Hop |
+| `PK` | Eigener voller Pubkey (64 Hex), zur Weitergabe an andere |
+| `PK <Name>` | Voller Pubkey (64 Hex) eines Kontakts — vor dem Senden abgleichen, da Namen fälschbar/duplizierbar sind |
 | `MI` | Eigene Account-Info |
 | `MC <mail>` | Mail-Kontaktadresse hinterlegen, z. B. `MC name@example.com` |
 | `REMOVE` | Eigene Registrierung löschen (nur per Direktnachricht) |
+
+### Pubkey-Sicherheitshinweis (einmalig pro User)
+
+Vor dem ersten `S`/`SB` muss jeder User (auch Bestandsuser) per Direktnachricht bestätigen, dass er verstanden hat: der angezeigte **Name** ist kein Identitätsnachweis — nur der **Pubkey** ist verlässlich. Ein Sendeversuch ohne Bestätigung liefert eine Fehlermeldung plus den Hinweistext mit einem 6-stelligen Code; Antwort per `OK <Code>` (15 Min. gültig) schaltet `S`/`SB` frei. Andere Befehle (`H`, `NL`, `R`, `WX`, ...) bleiben in der Zwischenzeit normal nutzbar.
 
 ### Self-Service-Registrierung (nur MeshCore-Kanal)
 

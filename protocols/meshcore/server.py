@@ -91,6 +91,12 @@ REGISTRATION_MAX_ATTEMPTS = 5   # falsche Bestaetigungscode-Versuche, danach Reg
                                  # LoRa-Bandbreite als natuerlichem Rate-Limit)
 SENT_WAIT       = 5.0   # Sekunden auf RESP_CODE_SENT nach einem DM-Send
 
+# Pubkey-Sicherheitshinweis vor dem ersten S/SB: Namen sind faelschbar/duplizierbar,
+# nur der Pubkey beweist Identitaet. Muss per "OK <Code>"-DM bestaetigt werden,
+# bevor S/SB freigeschaltet wird (siehe _pubkey_ack_gate / _confirm_pubkey_ack).
+PUBKEY_ACK_TIMEOUT = 900   # Sekunden, die ein Bestaetigungscode gueltig ist (15 Min)
+_PUBKEY_ACK_RE = re.compile(r'^OK\s*(\d{6})$', re.IGNORECASE)
+
 
 @dataclass
 class _Pending:
@@ -157,6 +163,10 @@ class MeshCoreServer(BaseProtocol):
         # Timestamps akzeptierter 'add'-Anfragen, fuer das Rate-Limit
         # (max. REGISTRATION_RATE_LIMIT pro REGISTRATION_RATE_WINDOW Sekunden)
         self._registration_request_times: list[float] = []
+
+        # pubkey_prefix (6B hex) -> {"code", "sent_at"} fuer ausstehende Pubkey-
+        # Sicherheitshinweis-Bestaetigungen (siehe _pubkey_ack_gate / _confirm_pubkey_ack)
+        self._pending_pubkey_ack: dict[str, dict] = {}
 
         self._self_pubkey: Optional[bytes] = None
         self._serial: Optional[aioserial.AioSerial] = None
@@ -932,6 +942,12 @@ class MeshCoreServer(BaseProtocol):
         if prefix_hex in self._pending_registrations and \
                 await self._confirm_registration(prefix_hex, msg.text):
             return
+        # Pubkey-Hinweis-Bestaetigung: nur "OK <Code>"-Antworten werden abgefangen,
+        # alle anderen Befehle bleiben waehrend der Wartezeit normal nutzbar (nur
+        # S/SB sind bis zur Bestaetigung gesperrt, siehe _pubkey_ack_gate).
+        if prefix_hex in self._pending_pubkey_ack and \
+                await self._confirm_pubkey_ack(prefix_hex, msg.text):
+            return
 
         # Identitaet IMMER ueber den Pubkey-Prefix aufloesen, nie ueber den vom Node
         # gemeldeten Kontaktnamen: der kann sich jederzeit aendern (Gross-/Kleinschreibung,
@@ -999,6 +1015,7 @@ class MeshCoreServer(BaseProtocol):
           R<n> Lesen        S TO|Betr|Text  SB Thema|Text
           K<n>/ND<n> Loeschen (nur eigene: erhaltene Nachrichten bzw. eigene Bulletins)
           MI   Meine Info  MC mail         REMOVE Abmelden
+          PK   eigener Pubkey (voll)   PK <Name>  voller Pubkey eines Kontakts
         """
         parts = text.strip().split(None, 1)
         if not parts:
@@ -1069,6 +1086,8 @@ class MeshCoreServer(BaseProtocol):
             return await self.bbs.cmd_list_users() if feat("userlist") else unknown
         if cmd == "PING":
             return await self._cmd_ping(arg, prefix_hex) if feat("ping") else unknown
+        if cmd == "PK":
+            return await self._cmd_pubkey(arg, prefix_hex)
         if cmd == "MI":
             return await self.bbs.cmd_my_info(callsign) if feat("account") else unknown
         if cmd == "MC":
@@ -1104,6 +1123,9 @@ class MeshCoreServer(BaseProtocol):
         if cmd in ("S", "SP"):
             if not feat("messages"):
                 return unknown
+            gate = await self._pubkey_ack_gate(prefix_hex, callsign)
+            if gate:
+                return gate
             p = arg.split("|", 2)
             if len(p) < 3:
                 return ["Format: S CALL|Betr|Text"]
@@ -1111,6 +1133,9 @@ class MeshCoreServer(BaseProtocol):
         if cmd == "SB":
             if not feat("board"):
                 return unknown
+            gate = await self._pubkey_ack_gate(prefix_hex, callsign)
+            if gate:
+                return gate
             p = arg.split("|", 1)
             if len(p) < 2:
                 return ["Format: SB Thema|Text"]
@@ -1431,6 +1456,85 @@ class MeshCoreServer(BaseProtocol):
                 sysop_call,
                 f"Neuer User registriert: {username} (Pubkey {pubkey_hex[:12]}...)")
         return True
+
+    # ------------------------------------------------------------------
+    # Pubkey-Sicherheitshinweis: Namen sind faelschbar/duplizierbar, nur der
+    # Pubkey beweist Identitaet. Vor dem ersten S/SB muss jeder User (auch
+    # Bestandsuser, siehe DB-Migration) dies per "OK <Code>"-DM bestaetigen.
+    # ------------------------------------------------------------------
+
+    async def _pubkey_ack_gate(self, prefix_hex: str, callsign: str) -> Optional[list[str]]:
+        """Prueft, ob callsign den Pubkey-Sicherheitshinweis bereits bestaetigt hat.
+        None = freigeschaltet, S/SB darf weiterlaufen. Sonst: Fehlermeldung + Hinweis
+        (mit neuem oder wiederverwendetem, noch gueltigem Code) als Antwort-Zeilen.
+        send_locked (nur per Web-Admin/SysOp setzbar) ueberstimmt eine evtl. bereits
+        vorhandene Bestaetigung -- eine dauerhafte Sperre laesst sich NICHT durch
+        erneutes 'OK <Code>' umgehen."""
+        confirmed, locked = await self.db.get_pubkey_ack_status(callsign)
+        if locked:
+            return ["Fehler: Senden fuer dieses Konto dauerhaft gesperrt (SysOp)."]
+        if confirmed:
+            return None
+
+        now = time.time()
+        pending = self._pending_pubkey_ack.get(prefix_hex)
+        if not pending or now - pending["sent_at"] > PUBKEY_ACK_TIMEOUT:
+            pending = {"code": f"{secrets.randbelow(1_000_000):06d}", "sent_at": now}
+            self._pending_pubkey_ack[prefix_hex] = pending
+            logger.info("Pubkey-Hinweis-Code an %s (%s...) gesendet",
+                        callsign, prefix_hex[:12])
+
+        return [
+            "Fehler: Erst Sicherheitshinweis bestaetigen (siehe unten).",
+            f"WICHTIG: Pubkey beweist Identitaet, nicht der Name! PK <Name> zeigt "
+            f"dessen Pubkey. Bestaetigen: OK {pending['code']} (15 Min), danach "
+            f"senden moeglich. 73 SysOp",
+        ]
+
+    async def _confirm_pubkey_ack(self, prefix_hex: str, text: str) -> bool:
+        """Prueft eine per DM eingegangene 'OK <Code>'-Antwort gegen eine
+        ausstehende Pubkey-Hinweis-Bestaetigung. Gibt True zurueck, wenn die
+        Nachricht als Bestaetigungsversuch erkannt wurde (dann NICHT mehr als
+        normalen BBS-Befehl weiterverarbeiten) -- alle anderen Texte werden
+        ignoriert (False), damit S/SB gesperrt bleibt, aber sonstige Befehle
+        (H, NL, R, WX, ...) waehrend der Wartezeit normal nutzbar bleiben."""
+        pending = self._pending_pubkey_ack.get(prefix_hex)
+        if not pending:
+            return False
+        m = _PUBKEY_ACK_RE.match(text.strip())
+        if not m:
+            return False
+
+        if m.group(1) != pending["code"]:
+            await self._reply(bytes.fromhex(prefix_hex),
+                               "Falscher Code. Bitte OK <Code> aus der vorherigen "
+                               "Nachricht erneut senden.")
+            return True
+
+        self._pending_pubkey_ack.pop(prefix_hex, None)
+        name = self._registered_names.get(prefix_hex, "")
+        if name:
+            await self.db.set_pubkey_ack_confirmed(name, True)
+        await self._reply(bytes.fromhex(prefix_hex),
+                           "Bestaetigt! Du kannst jetzt Nachrichten senden (S/SB). 73!")
+        logger.info("Pubkey-Hinweis bestaetigt: %s (%s...)", name, prefix_hex[:12])
+        return True
+
+    async def _cmd_pubkey(self, arg: str, prefix_hex: str) -> list[str]:
+        """PK: eigener voller Pubkey (64 Hex) zur Weitergabe an andere.
+        PK <Name>: voller Pubkey (64 Hex) eines Kontakts, zum Abgleich VOR
+        dem Senden -- der angezeigte Name ist kein Identitaetsnachweis."""
+        arg = arg.strip()
+        if not arg:
+            contact = self._contacts.get(prefix_hex)
+            if not contact:
+                return ["Fehler: eigener Kontakt nicht gefunden."]
+            return [f"Dein Pubkey: {contact.pubkey_hex}"]
+        info = await self.db.get_mc_contact_info(arg)
+        if not info:
+            return [f"Kein Kontakt '{arg}' gefunden."]
+        pubkey_hex, _, _ = info
+        return [f"{arg.upper()}: {pubkey_hex}"]
 
     async def _channel_remove_by_callsign(self, sender: str):
         """remove via Kanal – verifiziert per Rufzeichen aus dem Nachrichten-Prefix."""

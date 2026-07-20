@@ -43,6 +43,28 @@ class Database:
         except Exception as exc:
             if "duplicate column" not in str(exc).lower():
                 logger.error("Schema-Migration fehlgeschlagen: %s", exc, exc_info=True)
+        # migration for existing DBs without pubkey_ack_confirmed column (Pubkey-
+        # Sicherheitshinweis bestaetigt? Default 0 auch fuer Bestandsuser, siehe
+        # PUBKEY_ACK_TIMEOUT / _pubkey_ack_gate in protocols/meshcore/server.py)
+        try:
+            await self._db.execute(
+                "ALTER TABLE mc_contacts ADD COLUMN pubkey_ack_confirmed INTEGER DEFAULT 0")
+            await self._db.commit()
+            logger.debug("Schema-Migration: pubkey_ack_confirmed-Spalte hinzugefuegt")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                logger.error("Schema-Migration fehlgeschlagen: %s", exc, exc_info=True)
+        # migration for existing DBs without send_locked column (dauerhafte Sperre
+        # des Senderechts durch den SysOp/Web-Admin, unabhaengig von/staerker als
+        # pubkey_ack_confirmed - siehe _pubkey_ack_gate in protocols/meshcore/server.py)
+        try:
+            await self._db.execute(
+                "ALTER TABLE mc_contacts ADD COLUMN send_locked INTEGER DEFAULT 0")
+            await self._db.commit()
+            logger.debug("Schema-Migration: send_locked-Spalte hinzugefuegt")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                logger.error("Schema-Migration fehlgeschlagen: %s", exc, exc_info=True)
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -300,10 +322,47 @@ class Database:
         )
         await self._db.commit()
 
+    async def is_pubkey_ack_confirmed(self, name: str) -> bool:
+        """True, wenn der Pubkey-Sicherheitshinweis fuer diesen User bereits per
+        OK-Challenge bestaetigt wurde (siehe _pubkey_ack_gate in server.py)."""
+        cursor = await self._db.execute(
+            "SELECT pubkey_ack_confirmed FROM mc_contacts WHERE name = ?", (name.upper(),)
+        )
+        row = await cursor.fetchone()
+        return bool(row["pubkey_ack_confirmed"]) if row else False
+
+    async def set_pubkey_ack_confirmed(self, name: str, confirmed: bool = True):
+        await self._db.execute(
+            "UPDATE mc_contacts SET pubkey_ack_confirmed = ? WHERE name = ?",
+            (int(confirmed), name.upper()),
+        )
+        await self._db.commit()
+
+    async def get_pubkey_ack_status(self, name: str) -> tuple[bool, bool]:
+        """Returns (confirmed, send_locked) in einer Abfrage fuer _pubkey_ack_gate.
+        send_locked ist eine dauerhafte, nur vom SysOp/Web-Admin setzbare Sperre
+        des Senderechts -- staerker als/unabhaengig von pubkey_ack_confirmed."""
+        cursor = await self._db.execute(
+            "SELECT pubkey_ack_confirmed, send_locked FROM mc_contacts WHERE name = ?",
+            (name.upper(),),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return False, False
+        return bool(row["pubkey_ack_confirmed"]), bool(row["send_locked"])
+
+    async def set_send_locked(self, name: str, locked: bool = True):
+        await self._db.execute(
+            "UPDATE mc_contacts SET send_locked = ? WHERE name = ?",
+            (int(locked), name.upper()),
+        )
+        await self._db.commit()
+
     async def get_all_mc_contacts(self) -> list[dict]:
         """Alle registrierten MeshCore-User mit allen Feldern (fuer Web-Admin)."""
         cursor = await self._db.execute(
-            "SELECT pubkey, name, added_at, mail FROM mc_contacts ORDER BY name"
+            "SELECT pubkey, name, added_at, mail, pubkey_ack_confirmed, send_locked "
+            "FROM mc_contacts ORDER BY name"
         )
         return [dict(r) for r in await cursor.fetchall()]
 

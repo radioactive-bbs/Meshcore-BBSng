@@ -146,6 +146,7 @@ class BBSCore:
         if self.feature_enabled("ping"):
             lines.append("\U0001f4e1 PING  Repeaterliste")
             lines.append("\U0001f4e1 PING <Name>  Node-Ping")
+        lines.append("\U0001f511 PK <Name>  voller Pubkey (PK = eigener)")
         lines.append("\U0001f4e1 H  BBS-Main")
         return ["\n".join(lines)]
 
