@@ -301,7 +301,11 @@ class IncomingMessage:
 class Contact:
     pubkey: bytes           # 32 Byte
     name: str
-    path: bytes = b''       # Routing-Pfad (leer = direkt/unbekannt)
+    path: bytes = b''       # Routing-Pfad (1 Byte/Hop), nur aussagekraeftig wenn path_known
+    path_known: bool = False  # True = Node kennt einen konkreten Pfad (auch 0 Hops moeglich,
+                               # d.h. path==b'' UND path_known -- bestaetigter Direktnachbar).
+                               # False = Pfad dem Node unbekannt (out_path_len=0xFF/-1), NICHT
+                               # gleichbedeutend mit "direkt"! Siehe parse_contact().
     type: int = 0           # ADV_TYPE_* (1=Chat, 2=Repeater, 3=Room, 4=Sensor)
 
     @property
@@ -434,9 +438,11 @@ def parse_contact(payload: bytes) -> Optional[Contact]:
             return None
         pubkey       = payload[1:33]
         contact_type = payload[33]   # ADV_TYPE_* (1=Chat, 2=Repeater, 3=Room, 4=Sensor)
-        # [34] = flags, [35] = out_path_len (signed int8): -1/0xFF = kein Pfad,
-        # sonst Anzahl Bytes. out_path[36:100] = 1 Byte je Hop (Hash-Byte des Repeaters).
+        # [34] = flags, [35] = out_path_len (signed int8): -1/0xFF = kein Pfad BEKANNT
+        # (nicht dasselbe wie "0 Hops direkt"!), 0 = bestaetigter Direktnachbar,
+        # >0 = Anzahl Bytes. out_path[36:100] = 1 Byte je Hop (Hash-Byte des Repeaters).
         path_len = struct.unpack_from('b', payload, 35)[0]   # signed
+        path_known = path_len != -1
         path     = payload[36:36 + path_len] if 0 < path_len <= 64 else b''
         name_raw  = payload[100:132]
         name = name_raw.split(b'\x00')[0].decode('utf-8', errors='replace')
@@ -444,6 +450,6 @@ def parse_contact(payload: bytes) -> Optional[Contact]:
         # zeichen/ANSI/Zeilenumbrueche hier an der Grenze entfernen, damit sie nicht in
         # Logs (Log-Injection) oder fremde Terminals gelangen. Emoji/Unicode bleiben.
         name = sanitize.for_log(name)
-        return Contact(pubkey=pubkey, name=name, path=path, type=contact_type)
+        return Contact(pubkey=pubkey, name=name, path=path, path_known=path_known, type=contact_type)
     except Exception:
         return None

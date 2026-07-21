@@ -117,6 +117,56 @@ async def _unread_message_retention_loop(db: Database, config: dict, notify_dm):
         await asyncio.sleep(6 * 3600)
 
 
+DEFAULT_INACTIVITY_WARN_BEFORE_DAYS = [10, 5, 1]   # Default, ueberschreibbar per Web-Admin
+
+
+async def _inactivity_loop(db: Database, config: dict, notify_dm, meshcore):
+    """Inaktive User: je nach users.inactivity_warn_before_days (bis zu 3 Werte,
+    Tage VOR der automatischen Entfernung, Web-Admin einstellbar) eine einmalige
+    Erinnerungs-DM, bei Erreichen von users.inactivity_days (Default 60,
+    Web-Admin einstellbar) automatische Entfernung. Liest beides bei jedem Lauf
+    neu aus config (Web-Admin, ohne Neustart)."""
+    while True:
+        users_cfg = config.get("users", {})
+        threshold = users_cfg.get("inactivity_days", 60)
+        warn_before_days = users_cfg.get("inactivity_warn_before_days",
+                                         DEFAULT_INACTIVITY_WARN_BEFORE_DAYS)
+        # Absolute Inaktivitaets-Tage, an denen gewarnt wird (threshold - Vorlauf),
+        # nur gueltige Vorlaufwerte (positiv, kleiner als die Entfernungsfrist).
+        warn_days = sorted({threshold - b for b in warn_before_days if 0 < b < threshold})
+        try:
+            for warn_day in warn_days:
+                due = await db.get_unwarned_inactive_contacts(warn_day)
+                for c in due:
+                    if notify_dm:
+                        days_left = threshold - warn_day
+                        text = (f"Hinweis: Dein Account war {warn_day} Tage inaktiv und wird "
+                                f"in {days_left} Tagen automatisch geloescht, falls keine "
+                                f"Aktivitaet erfolgt. Einfach eine Nachricht senden, um aktiv "
+                                f"zu bleiben.")
+                        try:
+                            await notify_dm(c["name"], text)
+                        except Exception:
+                            logger.warning("Inaktivitaets-Hinweis an %s fehlgeschlagen",
+                                           c["name"], exc_info=True)
+                    await db.mark_inactivity_warned(c["name"], warn_day)
+                if due:
+                    logger.info("Inaktivitaets-Hinweis (%d Tage) an %d User verschickt",
+                                warn_day, len(due))
+
+            delete_sent_private = users_cfg.get("delete_sent_private_messages", True)
+            delete_sent_board = users_cfg.get("delete_sent_board_messages", True)
+            removed = await db.purge_inactive_contacts(threshold)
+            for c in removed:
+                await db.purge_user_messages(c["name"], delete_sent_private, delete_sent_board)
+                if meshcore:
+                    meshcore.evict_contact_cache(c["pubkey"])
+                logger.info("Inaktivitaet: %s nach %d Tagen entfernt", c["name"], threshold)
+        except Exception:
+            logger.exception("Inaktivitaets-Bereinigung fehlgeschlagen")
+        await asyncio.sleep(6 * 3600)
+
+
 async def main():
     with open("config/config.yaml", "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
@@ -190,6 +240,8 @@ async def main():
         purge_task = asyncio.create_task(_board_purge_loop(db, config))
         unread_retention_task = asyncio.create_task(
             _unread_message_retention_loop(db, config, notify_dm))
+        inactivity_task = asyncio.create_task(
+            _inactivity_loop(db, config, notify_dm, meshcore))
 
         logger.info("Meshcore BBSng gestartet. CTRL-C zum Beenden.")
 
@@ -214,7 +266,8 @@ async def main():
             logger.info("Fahre herunter...")
             purge_task.cancel()
             unread_retention_task.cancel()
-            for task in (purge_task, unread_retention_task):
+            inactivity_task.cancel()
+            for task in (purge_task, unread_retention_task, inactivity_task):
                 try:
                     await task
                 except asyncio.CancelledError:

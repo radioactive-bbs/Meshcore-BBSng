@@ -43,6 +43,28 @@ messages:
                                 # 3 Tage vorher bekommt der Empfaenger automatisch eine Erinnerungs-DM
                                 # (nur MeshCore-registrierte Empfaenger erreichbar).
 
+registration:
+  mode: "challenge"             # Modus fuer neue Anmeldungen (Channel-Befehl "add"):
+                                 # challenge = Bestaetigungscode per DM (Status quo)
+                                 # open = sofort aktiv, keine Pruefung
+                                 # sysop_approval = Antrag wartet im Web-Admin auf Freischaltung
+                                 # Bearbeitbar unter Web-Admin -> Einstellungen -> Registrierung.
+
+users:
+  inactivity_days: 60           # User ohne jede BBS-Aktivitaet werden nach dieser Frist entfernt.
+                                 # Bearbeitbar unter Web-Admin -> Einstellungen.
+  inactivity_warn_before_days: [10, 5, 1]   # Bis zu 3 Werte: Tage VOR der Entfernung, an denen je
+                                 # eine einmalige Warn-DM verschickt wird. Weniger als 3 Werte =
+                                 # entsprechend weniger Warnungen. Bearbeitbar unter Web-Admin ->
+                                 # Einstellungen -> Registrierung.
+  # Bei jeder Art der User-Entfernung (Inaktivitaet, Web-Admin Entfernen/Sperren,
+  # Self-Service REMOVE): empfangene private Nachrichten werden IMMER geloescht.
+  # Die beiden folgenden Schalter steuern zusaetzlich, getrennt nach Nachrichtenart,
+  # ob auch von diesem User selbst gesendete Nachrichten geloescht werden.
+  # Bearbeitbar unter Web-Admin -> Einstellungen -> Registrierung.
+  delete_sent_private_messages: true   # gesendete private Nachrichten des entfernten Users
+  delete_sent_board_messages: true     # eigene Board-Bulletins des entfernten Users
+
 meshcore:
   enabled: true
   serial_port: "/dev/meshcore"

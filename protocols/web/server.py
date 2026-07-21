@@ -68,6 +68,14 @@ SETTINGS_SPEC = [
     ("max_personal",   ("messages", "max_personal"),       "Nachrichten: Max. privates Postfach", int, 1, 500, True),
     ("unread_retention_days", ("messages", "unread_retention_days"),
                                                             "Nachrichten: Loeschfrist ungelesen (Tage)", int, 4, 365, True),
+    ("inactivity_days", ("users", "inactivity_days"),
+                                                            "Inaktivitaet: Entfernung nach (Tage)", int, 14, 3650, True),
+]
+
+REGISTRATION_MODES = [
+    ("challenge", "Bestaetigungscode per DM (Status quo)"),
+    ("open", "Offen (sofort aktiv, keine Pruefung)"),
+    ("sysop_approval", "Freischaltung durch SysOp (im Web-Admin)"),
 ]
 
 ADV_TYPES = {1: "Client", 2: "Repeater", 3: "Room", 4: "Sensor"}
@@ -198,6 +206,15 @@ def _fmt_ts(iso: Optional[str]) -> str:
         return iso
 
 
+def _fmt_path(node: Optional[dict]) -> str:
+    """Zeigt den vom Node bekannten Routing-Pfad an. path_known unterscheidet
+    'Pfad dem Node unbekannt' (haeufig, z.B. vor dem ersten Nachrichtenaustausch)
+    von einem bestaetigten Pfad -- beides fiel frueher unter 'direkt/flood'."""
+    if not node or not node.get("path_known"):
+        return "unbekannt"
+    return node["path"] or "direkt (bestaetigt)"
+
+
 class WebAdminServer(BaseProtocol):
     def __init__(self, db: Database, config: dict, meshcore=None):
         self.db = db
@@ -255,6 +272,7 @@ class WebAdminServer(BaseProtocol):
             web.post("/settings", self.do_settings),
             web.post("/features", self.do_features),
             web.post("/cosysops", self.do_cosysops),
+            web.post("/registration", self.do_registration_mode),
             web.post("/admins/add", self.do_admin_add),
             web.post("/admins/delete", self.do_admin_delete),
             web.post("/operation", self.do_operation),
@@ -274,6 +292,8 @@ class WebAdminServer(BaseProtocol):
             web.post("/users/ackrevoke", self.do_ack_revoke),
             web.post("/users/sendlock", self.do_send_lock),
             web.post("/users/sendunlock", self.do_send_unlock),
+            web.post("/users/approve", self.do_registration_approve),
+            web.post("/users/reject", self.do_registration_reject),
             web.get("/messages", self.page_messages),
             web.get("/messages/new", self.page_message_new),
             web.post("/messages/new", self.do_message_new),
@@ -696,6 +716,30 @@ class WebAdminServer(BaseProtocol):
         <p style="color:var(--dim)">Felder mit <span class="badge">live</span> wirken sofort am Node.
         Alle Werte landen in <code>config/webconfig.yaml</code> (Overlay ueber config.yaml)
         und gelten dauerhaft ab dem naechsten Start.</p>
+        <h2>Registrierung</h2>
+        <form method="post" action="/registration">
+          <div class="field"><label>Modus fuer neue Anmeldungen (Channel-Befehl "add")</label>
+            <select name="mode">{self._registration_mode_options()}</select></div>
+          <div class="field" style="max-width:600px;align-items:flex-start"><label>Nachrichten entfernter User
+            (empfangene private Nachrichten werden bei Entfernung immer geloescht)</label>
+            <label style="font-weight:normal"><input type="checkbox" name="delete_sent_private_messages"
+                   {' checked' if self.config.get('users', {}).get('delete_sent_private_messages', True) else ''}
+                   style="width:auto"> auch gesendete private Nachrichten loeschen</label>
+            <label style="font-weight:normal"><input type="checkbox" name="delete_sent_board_messages"
+                   {' checked' if self.config.get('users', {}).get('delete_sent_board_messages', True) else ''}
+                   style="width:auto"> auch eigene Board-Bulletins loeschen</label></div>
+          <div class="field" style="align-items:flex-start"><label>Inaktivitaets-Warnungen
+            (Tage VOR der Entfernung, bis zu 3, Komma-getrennt)</label>
+            <input name="warn_before_days" style="width:150px" maxlength="20"
+                   value="{_esc(', '.join(str(d) for d in self.config.get('users', {}).get('inactivity_warn_before_days', [10, 5, 1])))}"
+                   placeholder="z.B. 10, 5, 1"></div>
+          <p><button>Registrierung speichern</button></p>
+        </form>
+        <p style="color:var(--dim)">Wirkt sofort, auch fuer die automatische
+        Inaktivitaets-Entfernung (Feld "Inaktivitaet: Entfernung nach (Tage)" oben).
+        Leer lassen bzw. weniger als 3 Werte angeben = entsprechend weniger Warnungen.
+        Gilt zusammen mit dem Nachrichten-Feld auch fuer jede manuelle Entfernung/Sperre
+        auf der Benutzer-Seite.</p>
         <h2>Betrieb</h2>
         <form method="post" action="/operation">
           <div class="field"><label>MOTD (wird im Hauptmenue angezeigt)</label></div>
@@ -849,6 +893,49 @@ class WebAdminServer(BaseProtocol):
         logger.info("Web-Admin: Co-SysOps geaendert: %s", ", ".join(names) or "keine")
         msg = f"Co-SysOps gespeichert: {', '.join(names)}." if names else "Co-SysOps entfernt."
         return self._redirect("/settings", ok=msg)
+
+    def _registration_mode_options(self) -> str:
+        current = self.config.get("registration", {}).get("mode", "challenge")
+        return "".join(
+            f"<option value='{value}'{' selected' if value == current else ''}>{_esc(label)}</option>"
+            for value, label in REGISTRATION_MODES
+        )
+
+    async def do_registration_mode(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        mode = str(form.get("mode", "")).strip()
+        valid_modes = {v for v, _ in REGISTRATION_MODES}
+        if mode not in valid_modes:
+            return self._redirect("/settings", err=f"Ungueltiger Registrierungs-Modus: {mode}")
+        delete_sent_private = "delete_sent_private_messages" in form
+        delete_sent_board = "delete_sent_board_messages" in form
+
+        raw_warn = str(form.get("warn_before_days", "")).strip()
+        warn_before_days = []
+        if raw_warn:
+            parts = [p.strip() for p in raw_warn.split(",") if p.strip()]
+            if len(parts) > 3:
+                return self._redirect("/settings", err="Maximal 3 Inaktivitaets-Warnungen erlaubt")
+            for p in parts:
+                if not p.isdigit() or int(p) <= 0:
+                    return self._redirect("/settings", err=f"Ungueltiger Wert bei Inaktivitaets-Warnungen: {p}")
+                warn_before_days.append(int(p))
+
+        overlay = self._load_overlay()
+        overlay["registration"] = {"mode": mode}
+        overlay.setdefault("users", {})["delete_sent_private_messages"] = delete_sent_private
+        overlay["users"]["delete_sent_board_messages"] = delete_sent_board
+        overlay["users"]["inactivity_warn_before_days"] = warn_before_days
+        self._save_overlay(overlay)
+        self.config["registration"] = {"mode": mode}
+        self.config.setdefault("users", {})["delete_sent_private_messages"] = delete_sent_private
+        self.config["users"]["delete_sent_board_messages"] = delete_sent_board
+        self.config["users"]["inactivity_warn_before_days"] = warn_before_days
+        logger.info("Web-Admin: Registrierungs-Modus '%s', gesendete private Nachrichten "
+                    "loeschen: %s, Board-Bulletins loeschen: %s, Inaktivitaets-Warnungen "
+                    "(Tage vorher): %s",
+                    mode, delete_sent_private, delete_sent_board, warn_before_days or "keine")
+        return self._redirect("/settings", ok=f"Registrierung gespeichert (Modus: {mode}).")
 
     async def do_operation(self, request: web.Request) -> web.Response:
         form = await request.post()
@@ -1096,7 +1183,7 @@ class WebAdminServer(BaseProtocol):
         for c in contacts:
             prefix = c["pubkey"][:12]
             node = live.get(prefix)
-            path = node["path"] if node else ""
+            path = _fmt_path(node)
             seen = _fmt_age(node["last_seen_age"]) if node and node["last_seen_age"] is not None else "-"
 
             # Senderecht (Pubkey-Sicherheitshinweis): dauerhafte Sperre (send_locked)
@@ -1129,7 +1216,8 @@ class WebAdminServer(BaseProtocol):
               <td><b>{_esc(c['name'])}</b><br><span class='mono' style='color:var(--dim)'>{_esc(prefix)}…</span></td>
               <td>{_fmt_ts(c['added_at'])}</td>
               <td>{_esc(seen)}</td>
-              <td class='mono'>{_esc(path) or 'direkt/flood'}</td>
+              <td>{_fmt_ts(c['last_active'])}</td>
+              <td class='mono'>{_esc(path)}</td>
               <td><form class='inline' method='post' action='/users/mail'>
                     <input type='hidden' name='name' value='{_esc(c['name'])}'>
                     <input name='mail' value='{_esc(c['mail'])}' placeholder='Mail' style='width:150px'>
@@ -1145,8 +1233,25 @@ class WebAdminServer(BaseProtocol):
                     <button class='small ghost'>Sperren</button></form></td>
             </tr>""")
         mesh_table = (f"<table><tr><th>Name / Pubkey</th><th>Registriert</th><th>Zuletzt gesehen</th>"
-                      f"<th>Pfad</th><th>Mail</th><th>Senderecht</th><th></th></tr>{''.join(rows)}</table>"
+                      f"<th>Zuletzt aktiv</th><th>Pfad</th><th>Mail</th><th>Senderecht</th><th></th></tr>"
+                      f"{''.join(rows)}</table>"
                       if rows else "<p>Keine registrierten MeshCore-User.</p>")
+
+        pending = await self.db.get_pending_registrations()
+        prows = "".join(f"""<tr><td><b>{_esc(p['name'])}</b><br>
+              <span class='mono' style='color:var(--dim)'>{_esc(p['pubkey'][:12])}…</span></td>
+              <td>{_fmt_ts(p['requested_at'])}</td>
+              <td><form class='inline' method='post' action='/users/approve'>
+                    <input type='hidden' name='prefix_hex' value='{_esc(p['prefix_hex'])}'>
+                    <button class='small ghost'>Freischalten</button></form>
+                  <form class='inline' method='post' action='/users/reject'
+                        onsubmit="return confirm('Registrierung von {_esc(p['name'])} ablehnen?')">
+                    <input type='hidden' name='prefix_hex' value='{_esc(p['prefix_hex'])}'>
+                    <button class='small danger'>Ablehnen</button></form></td></tr>"""
+                       for p in pending)
+        pending_section = (f"""<h2>Ausstehende Freischaltungen ({len(pending)})</h2>
+        <table><tr><th>Name / Pubkey</th><th>Angefragt</th><th></th></tr>{prows}</table>"""
+                           if pending else "")
 
         blocked = await self.db.get_blocked()
         brows = "".join(f"""<tr><td><b>{_esc(b['name']) or '-'}</b></td>
@@ -1162,6 +1267,7 @@ class WebAdminServer(BaseProtocol):
 
         body = f"""
         <h2>MeshCore-User ({len(contacts)})</h2>{mesh_table}
+        {pending_section}
         <h2>Manuell registrieren</h2>
         <form method="post" action="/users/add">
           <input name="name" placeholder="Rufzeichen/Name" maxlength="16" required>
@@ -1280,6 +1386,25 @@ class WebAdminServer(BaseProtocol):
             return self._redirect("/users", err=f"{name} nicht gefunden")
         await self.db.set_send_locked(name, False)
         return self._redirect("/users", ok=f"Dauerhafte Sperre fuer {name.upper()} aufgehoben")
+
+    async def do_registration_approve(self, request: web.Request) -> web.Response:
+        """Freischaltung einer im Modus 'sysop_approval' wartenden Registrierung."""
+        form = await request.post()
+        prefix_hex = str(form.get("prefix_hex", "")).strip()
+        if not self.meshcore:
+            return self._redirect("/users", err="MeshCore ist deaktiviert")
+        if not await self.meshcore.approve_registration(prefix_hex):
+            return self._redirect("/users", err="Registrierung nicht gefunden (evtl. bereits bearbeitet)")
+        return self._redirect("/users", ok="Registrierung freigeschaltet")
+
+    async def do_registration_reject(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        prefix_hex = str(form.get("prefix_hex", "")).strip()
+        if not self.meshcore:
+            return self._redirect("/users", err="MeshCore ist deaktiviert")
+        if not await self.meshcore.reject_registration(prefix_hex):
+            return self._redirect("/users", err="Registrierung nicht gefunden (evtl. bereits bearbeitet)")
+        return self._redirect("/users", ok="Registrierung abgelehnt")
 
     # ------------------------------------------------------------------
     # Nachrichten
@@ -1452,9 +1577,9 @@ class WebAdminServer(BaseProtocol):
     # Hop-Rampe, kategorial fuer die Gesamtfolge inkl. Flood/Unbekannt).
     _ROUTE_COLORS = {"flood": "#3987e5", "hop_1": "#2eaa7b", "hop_2_5": "#009063",
                      "hop_gt5": "#00764b", "unbekannt": "#5b6472"}
-    _ROUTE_LABELS = {"flood": "Flood", "hop_1": "Direkt (1 Hop)",
+    _ROUTE_LABELS = {"flood": "Flood", "hop_1": "Direkt (1 Hop, bestaetigt)",
                      "hop_2_5": "Multihop (2-5 Hops)", "hop_gt5": "Multihop (>5 Hops)",
-                     "unbekannt": "Unbekannt (Alt-Daten)"}
+                     "unbekannt": "Direkt (Pfad unbekannt) / Alt-Daten"}
     _ROUTE_ORDER = ("flood", "hop_1", "hop_2_5", "hop_gt5", "unbekannt")
 
     @classmethod
@@ -1764,7 +1889,7 @@ class WebAdminServer(BaseProtocol):
         crows = "".join(
             f"<tr><td>{_esc(c['name'])}</td><td class='mono'>{_esc(c['prefix'])}</td>"
             f"<td>{ADV_TYPES.get(c['type'], c['type'])}</td>"
-            f"<td class='mono'>{_esc(c['path']) or 'direkt/flood'}</td>"
+            f"<td class='mono'>{_esc(_fmt_path(c))}</td>"
             f"<td>{_fmt_age(c['last_seen_age']) if c['last_seen_age'] is not None else '-'}</td>"
             f"<td><form class='inline' method='post' action='/debug/ping' "
             f"onsubmit=\"this.querySelector('button').textContent='...';\">"

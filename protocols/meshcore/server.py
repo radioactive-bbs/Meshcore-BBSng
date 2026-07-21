@@ -317,6 +317,18 @@ class MeshCoreServer(BaseProtocol):
             return "hop_2_5"
         return "hop_gt5"
 
+    @classmethod
+    def _route_for_direct_contact(cls, contact: Optional[Contact]) -> str:
+        """events.route fuer eine Direktpfad-Zustellung (is_direct=True bzw. ACK/
+        Retry-Handling eines nicht-geflooteten Sends). Contact.path ist nur
+        aussagekraeftig, wenn contact.path_known True ist -- sonst ist der Pfad dem
+        Node schlicht unbekannt (haeufig bei diesem Firmware-Verhalten!) und darf
+        NICHT stillschweigend als '1 Hop' angenommen werden (fruehere Annahme,
+        siehe Bugreport: Statistik zeigte dadurch nie echte Multihop-Direktzustellungen)."""
+        if not contact or not contact.path_known:
+            return "unbekannt"
+        return cls._hop_bucket(cls._hops_for_path(contact.path))
+
     def _canonical_name(self, prefix_hex: str, fallback: str) -> str:
         """Stabiler Name fuer Statistik-Events (events.callsign): bevorzugt den
         registrierten DB-Namen. Der vom Node gemeldete Kontaktname (self._contacts)
@@ -382,6 +394,7 @@ class MeshCoreServer(BaseProtocol):
                 "name": contact.name,
                 "type": contact.type,
                 "path": contact.path.hex() if contact.path else "",
+                "path_known": contact.path_known,
                 "last_seen_age": (now - last) if last else None,
             })
         return sorted(entries, key=lambda e: e["name"].lower())
@@ -420,14 +433,63 @@ class MeshCoreServer(BaseProtocol):
         await self._send(build_get_contacts())
         logger.info("Web-Admin: %s registriert (pubkey %s...)", name.upper(), pubkey_hex[:12])
 
+    async def approve_registration(self, prefix_hex: str) -> bool:
+        """Schaltet eine im Modus 'sysop_approval' wartende Registrierung frei
+        (Web-Admin -> Benutzer -> Ausstehende Freischaltungen)."""
+        pending = await self.db.pop_pending_registration(prefix_hex)
+        if not pending:
+            return False
+        await self.register_user(pending["pubkey"], pending["name"])
+        bbs_call = self.config.get("callsign", "SysOp")
+        await self._reply(bytes.fromhex(prefix_hex),
+                           f"Freigeschaltet! Hallo {pending['name']}, dein Account ist jetzt "
+                           f"aktiv. H = Hilfe & Befehlsuebersicht. 73 de {bbs_call}")
+        logger.info("Web-Admin: Registrierung von %s freigeschaltet (pubkey %s...)",
+                    pending["name"], pending["pubkey"][:12])
+        return True
+
+    async def reject_registration(self, prefix_hex: str) -> bool:
+        """Lehnt eine im Modus 'sysop_approval' wartende Registrierung ab."""
+        pending = await self.db.pop_pending_registration(prefix_hex)
+        if not pending:
+            return False
+        self._contacts.pop(prefix_hex, None)
+        await self._reply(bytes.fromhex(prefix_hex),
+                           f"Registrierung von '{pending['name']}' wurde vom SysOp abgelehnt.")
+        logger.info("Web-Admin: Registrierung von %s abgelehnt (pubkey %s...)",
+                    pending["name"], pending["pubkey"][:12])
+        return True
+
     async def remove_user(self, name: str) -> bool:
         """Entfernt einen registrierten User aus der DB (Node-Kontakt bleibt bis Reboot)."""
         found = await self.db.find_mc_contact_by_name(name)
         if not found:
             return False
-        await self.db.delete_mc_contact(found[0])
+        pubkey_hex, uname = found
+        await self.db.delete_mc_contact(pubkey_hex)
+        await self.db.purge_user_messages(uname, *self._delete_sent_flags())
+        self.evict_contact_cache(pubkey_hex)
         logger.info("Web-Admin: %s entfernt", name.upper())
         return True
+
+    def evict_contact_cache(self, pubkey_hex: str):
+        """Entfernt einen Pubkey aus den In-Memory-Caches (_contacts/_registered_names),
+        z.B. nach einer Entfernung aus der DB (Web-Admin, Self-Service REMOVE,
+        Inaktivitaets-Bereinigung in main.py). Der Node-Kontakt selbst bleibt bis
+        zum naechsten Reboot bestehen."""
+        prefix_hex = pubkey_hex[:12]
+        self._contacts.pop(prefix_hex, None)
+        self._registered_names.pop(prefix_hex, None)
+
+    def _delete_sent_flags(self) -> tuple[bool, bool]:
+        """Ob bei einer User-Entfernung auch von ihm gesendete private Nachrichten
+        bzw. eigene Board-Bulletins geloescht werden (empfangene private
+        Nachrichten werden immer geloescht) -- getrennte Web-Admin-Einstellungen
+        users.delete_sent_private_messages / delete_sent_board_messages,
+        Default jeweils True. Rueckgabe: (delete_sent_private, delete_sent_board)."""
+        users_cfg = self.config.get("users", {})
+        return (bool(users_cfg.get("delete_sent_private_messages", True)),
+                bool(users_cfg.get("delete_sent_board_messages", True)))
 
     async def _dm_to_registered_user(self, name: str, text: str) -> bool:
         """Sendet eine DM an einen registrierten User (per Name/Rufzeichen), falls
@@ -487,6 +549,8 @@ class MeshCoreServer(BaseProtocol):
         pubkey_hex, uname = found
         await self.db.add_blocked(pubkey_hex, uname, reason)
         await self.db.delete_mc_contact(pubkey_hex)
+        await self.db.purge_user_messages(uname, *self._delete_sent_flags())
+        self.evict_contact_cache(pubkey_hex)
         await self.refresh_blocklist()
         logger.warning("Web-Admin: %s gesperrt (%s)", uname, reason or "kein Grund angegeben")
         return True
@@ -658,9 +722,7 @@ class MeshCoreServer(BaseProtocol):
                     else:
                         del self._pending[prefix_hex]
                         logger.info("ACK von %s ✓ (RTT %dms)", name, rtt)
-                        route = ("flood" if pend.is_flood
-                                 else self._hop_bucket(self._hops_for_path(contact.path)) if (contact and contact.path)
-                                 else "hop_1")
+                        route = "flood" if pend.is_flood else self._route_for_direct_contact(contact)
                         self._create_tracked_task(self.db.log_event(
                             "ack", self._canonical_name(prefix_hex, name), str(rtt), route=route))
                     matched = True
@@ -696,8 +758,13 @@ class MeshCoreServer(BaseProtocol):
             if contact and contact.name:
                 key = contact.pubkey_prefix.hex()
                 self._contacts[key] = contact
-                logger.info("Kontakt geladen: %s (%s) path=%s",
-                            contact.name, key, contact.path.hex() if contact.path else "direkt")
+                if not contact.path_known:
+                    path_info = "unbekannt"
+                elif contact.path:
+                    path_info = contact.path.hex()
+                else:
+                    path_info = "direkt (bestaetigt)"
+                logger.info("Kontakt geladen: %s (%s) path=%s", contact.name, key, path_info)
 
         elif ptype == RESP_NO_MORE_MSGS:
             pass   # Queue leer – kein weiteres CMD_SYNC_NEXT_MESSAGE noetig
@@ -954,14 +1021,16 @@ class MeshCoreServer(BaseProtocol):
         # "/P"-Suffix, Emoji...) ohne Neu-Registrierung, sonst landen NL/R/S & Co. unter
         # einer anderen Identitaet als der, unter der Nachrichten gespeichert wurden.
         callsign = self._canonical_name(prefix_hex, contact.name.upper())
+        self._create_tracked_task(self.db.touch_last_active(callsign))
 
         snr_info = f" SNR:{msg.snr:.1f}dB" if msg.snr is not None else ""
         if msg.is_direct:
-            if contact.path:
+            route = self._route_for_direct_contact(contact)
+            if contact.path_known:
                 n_hops = self._hops_for_path(contact.path)
-                route, hop_info = self._hop_bucket(n_hops), f" direkt/{n_hops}Hop"
+                hop_info = f" direkt/{n_hops}Hop"
             else:
-                route, hop_info = "hop_1", " direkt"
+                hop_info = " direkt/Pfad unbekannt"
         elif msg.hop_count == 0:
             route, hop_info = "flood", " flood"
         else:
@@ -1310,6 +1379,10 @@ class MeshCoreServer(BaseProtocol):
                 p["username"] == username for p in self._pending_registrations.values()):
             await self._reply_channel(f"Fehler: '{username}' wartet bereits auf Bestaetigung")
             return
+        if await self.db.find_pending_registration_by_name(username) or \
+                await self.db.find_pending_registration_by_pubkey(pubkey_hex):
+            await self._reply_channel(f"Fehler: '{username}' wartet bereits auf Freischaltung durch den SysOp")
+            return
 
         # Rate-Limit gegen Squatting-Flut / Spam: der im Klartext mitgeschickte PUBKEY
         # ist bis zur Bestaetigungs-Antwort unbewiesen (siehe _send_registration_challenge),
@@ -1323,7 +1396,11 @@ class MeshCoreServer(BaseProtocol):
             return
         self._registration_request_times.append(now)
 
-        c = Contact(pubkey=bytes.fromhex(pubkey_hex), name=username, path=path)
+        # path_known bewusst NICHT gesetzt: die 6-Byte-Channel-Metadaten (Parameter
+        # 'path') sind kein gueltiger Routing-Pfad (siehe Kommentar unten) und duerfen
+        # nicht in Contact.path/.path_known landen, sonst verfaelscht das spaeter die
+        # Hop-Statistik (_route_for_direct_contact) bis zum naechsten RESP_CONTACT-Refresh.
+        c = Contact(pubkey=bytes.fromhex(pubkey_hex), name=username)
         self._contacts[c.pubkey_prefix.hex()] = c
         self._pending_registrations[c.pubkey_prefix.hex()] = {
             "username": username, "pubkey_hex": pubkey_hex, "code": None, "attempts": 0,
@@ -1358,14 +1435,50 @@ class MeshCoreServer(BaseProtocol):
             await self._reply_channel(uri)
 
         await asyncio.sleep(2.0)
-        await self._reply_channel(
-            f"{username}: in ca. {REGISTRATION_CHALLENGE_DELAY // 60} Minuten erhaeltst du eine "
-            f"DM mit einem Bestaetigungscode zum Abschluss der Registrierung (Zeit zum "
-            f"Kontakt-Anlegen). 73 de {bbs_call}")
-        logger.info("Self-Service: %s beantragt (pubkey %s..., path=%s)",
-                    username, pubkey_hex[:12], path.hex() if path else "leer")
+        mode = self.config.get("registration", {}).get("mode", "challenge")
 
-        self._create_tracked_task(self._send_registration_challenge(c.pubkey_prefix.hex()))
+        if mode == "open":
+            await self._reply_channel(
+                f"{username}: Registrierung abgeschlossen, dein Account ist sofort aktiv. "
+                f"73 de {bbs_call}")
+            await self.db.save_mc_contact(pubkey_hex, username)
+            self._registered_names[prefix_hex] = username
+            welcome = (
+                f"Willkommen {username}, dein Account ist jetzt aktiv. "
+                f"Du erreichst das BBS per Direktnachricht. H = Hilfe & Befehlsuebersicht. "
+                f"Account loeschen: sende REMOVE als Direktnachricht. 73 de {bbs_call}"
+            )
+            await self._reply(bytes.fromhex(pubkey_hex)[:6], welcome)
+            logger.info("Self-Service (open): %s registriert (pubkey %s...)",
+                        username, pubkey_hex[:12])
+            sysop_call = self.config.get("sysop", "")
+            if sysop_call:
+                await self.sysop_dm(
+                    sysop_call,
+                    f"Neuer User registriert (Modus: open): {username} (Pubkey {pubkey_hex[:12]}...)")
+
+        elif mode == "sysop_approval":
+            await self._reply_channel(
+                f"{username}: Antrag wartet auf Freischaltung durch den SysOp. 73 de {bbs_call}")
+            await self.db.add_pending_registration(prefix_hex, pubkey_hex, username,
+                                                    path.hex() if path else "")
+            logger.info("Self-Service (sysop_approval): %s wartet auf Freischaltung (pubkey %s...)",
+                        username, pubkey_hex[:12])
+            sysop_call = self.config.get("sysop", "")
+            if sysop_call:
+                await self.sysop_dm(
+                    sysop_call,
+                    f"Neue Registrierungsanfrage: {username} (Pubkey {pubkey_hex[:12]}...) "
+                    f"wartet im Web-Admin -> Benutzer auf Freischaltung.")
+
+        else:  # mode == "challenge" (Default/Status quo)
+            await self._reply_channel(
+                f"{username}: in ca. {REGISTRATION_CHALLENGE_DELAY // 60} Minuten erhaeltst du eine "
+                f"DM mit einem Bestaetigungscode zum Abschluss der Registrierung (Zeit zum "
+                f"Kontakt-Anlegen). 73 de {bbs_call}")
+            logger.info("Self-Service (challenge): %s beantragt (pubkey %s..., path=%s)",
+                        username, pubkey_hex[:12], path.hex() if path else "leer")
+            self._create_tracked_task(self._send_registration_challenge(c.pubkey_prefix.hex()))
 
     async def _send_registration_challenge(self, prefix_hex: str):
         """Wartet REGISTRATION_CHALLENGE_DELAY, damit der User Zeit hat, das BBS als
@@ -1566,8 +1679,8 @@ class MeshCoreServer(BaseProtocol):
             return
 
         await self.db.delete_mc_contact(stored_pubkey_hex)
-        self._contacts.pop(prefix_hex, None)
-        self._registered_names.pop(prefix_hex, None)
+        await self.db.purge_user_messages(callsign, *self._delete_sent_flags())
+        self.evict_contact_cache(stored_pubkey_hex)
         await self._reply(pubkey_prefix, f"{callsign} entfernt. 73!")
         logger.info("Self-Service: %s entfernt (%s)", callsign, prefix_hex)
 
@@ -1637,8 +1750,7 @@ class MeshCoreServer(BaseProtocol):
                     else:
                         logger.warning("Keine Bestaetigung von %s nach %d Versuchen – aufgegeben",
                                        name, MAX_RETRIES + 1)
-                        route = (self._hop_bucket(self._hops_for_path(contact.path)) if (contact and contact.path)
-                                 else "hop_1")
+                        route = self._route_for_direct_contact(contact)
                         self._create_tracked_task(self.db.log_event("noack", canonical, "retries", route=route))
                     self._pending.pop(prefix_hex, None)
                     continue

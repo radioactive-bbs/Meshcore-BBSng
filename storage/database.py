@@ -65,6 +65,29 @@ class Database:
         except Exception as exc:
             if "duplicate column" not in str(exc).lower():
                 logger.error("Schema-Migration fehlgeschlagen: %s", exc, exc_info=True)
+        # migration for existing DBs without last_active column (letzte Interaktion,
+        # Basis fuer die Inaktivitaets-Bereinigung - siehe touch_last_active/
+        # purge_inactive_contacts). NULL = seit Registrierung keine Aktivitaet,
+        # dann gilt added_at als Basis (siehe COALESCE in den Abfragen unten).
+        try:
+            await self._db.execute(
+                "ALTER TABLE mc_contacts ADD COLUMN last_active TEXT DEFAULT NULL")
+            await self._db.commit()
+            logger.debug("Schema-Migration: last_active-Spalte hinzugefuegt")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                logger.error("Schema-Migration fehlgeschlagen: %s", exc, exc_info=True)
+        # migration for existing DBs without inactivity_warned_days column (comma-Liste
+        # bereits verschickter Inaktivitaets-Warnschwellen, z.B. "50,55" - wird bei
+        # erneuter Aktivitaet zurueckgesetzt, siehe touch_last_active)
+        try:
+            await self._db.execute(
+                "ALTER TABLE mc_contacts ADD COLUMN inactivity_warned_days TEXT DEFAULT ''")
+            await self._db.commit()
+            logger.debug("Schema-Migration: inactivity_warned_days-Spalte hinzugefuegt")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                logger.error("Schema-Migration fehlgeschlagen: %s", exc, exc_info=True)
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,6 +160,19 @@ class Database:
                 name       TEXT DEFAULT '',
                 reason     TEXT DEFAULT '',
                 blocked_at TEXT NOT NULL
+            )
+        """)
+        # Ausstehende Registrierungen im Modus "sysop_approval" (registration.mode,
+        # siehe protocols/meshcore/server.py) - persistent, da eine Freischaltung
+        # durch den SysOp beliebig lange dauern kann (anders als der kurzlebige
+        # RAM-Bestaetigungscode im Modus "challenge").
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS pending_registrations (
+                prefix_hex   TEXT PRIMARY KEY,
+                pubkey       TEXT NOT NULL,
+                name         TEXT NOT NULL,
+                path         TEXT DEFAULT '',
+                requested_at TEXT NOT NULL
             )
         """)
         # Events aelter als 90 Tage aufraeumen
@@ -361,10 +397,140 @@ class Database:
     async def get_all_mc_contacts(self) -> list[dict]:
         """Alle registrierten MeshCore-User mit allen Feldern (fuer Web-Admin)."""
         cursor = await self._db.execute(
-            "SELECT pubkey, name, added_at, mail, pubkey_ack_confirmed, send_locked "
+            "SELECT pubkey, name, added_at, mail, pubkey_ack_confirmed, send_locked, "
+            "COALESCE(last_active, added_at) AS last_active "
             "FROM mc_contacts ORDER BY name"
         )
         return [dict(r) for r in await cursor.fetchall()]
+
+    # --- Inaktivitaets-Bereinigung ------------------------------------------
+
+    async def touch_last_active(self, name: str):
+        """Aktualisiert die letzte Aktivitaet (jede angenommene DM zaehlt, siehe
+        _handle_message in protocols/meshcore/server.py) und setzt bereits
+        verschickte Inaktivitaets-Warnungen zurueck, da der User wieder aktiv ist."""
+        await self._db.execute(
+            "UPDATE mc_contacts SET last_active = ?, inactivity_warned_days = '' "
+            "WHERE name = ?",
+            (datetime.utcnow().isoformat(), name.upper()),
+        )
+        await self._db.commit()
+
+    async def get_unwarned_inactive_contacts(self, warn_day: int) -> list[dict]:
+        """User, deren letzte Aktivitaet mindestens warn_day Tage zurueckliegt und
+        die fuer GENAU diese Warnschwelle noch keine Erinnerungs-DM bekommen haben
+        (Filterung der bereits verschickten Schwellen in Python, da eine
+        comma-Liste in SQL nur unhandlich abfragbar waere)."""
+        cursor = await self._db.execute(
+            "SELECT name, COALESCE(last_active, added_at) AS basis, inactivity_warned_days "
+            "FROM mc_contacts WHERE COALESCE(last_active, added_at) < datetime('now', ?)",
+            (f"-{warn_day} days",),
+        )
+        due = []
+        for row in await cursor.fetchall():
+            warned = {int(d) for d in row["inactivity_warned_days"].split(",") if d}
+            if warn_day not in warned:
+                due.append(dict(row))
+        return due
+
+    async def mark_inactivity_warned(self, name: str, warn_day: int):
+        cursor = await self._db.execute(
+            "SELECT inactivity_warned_days FROM mc_contacts WHERE name = ?", (name.upper(),)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return
+        warned = {int(d) for d in row["inactivity_warned_days"].split(",") if d}
+        warned.add(warn_day)
+        await self._db.execute(
+            "UPDATE mc_contacts SET inactivity_warned_days = ? WHERE name = ?",
+            (",".join(str(d) for d in sorted(warned)), name.upper()),
+        )
+        await self._db.commit()
+
+    async def purge_inactive_contacts(self, days: int) -> list[dict]:
+        """Entfernt User, deren letzte Aktivitaet mindestens `days` Tage
+        zurueckliegt. Gibt die entfernten {name, pubkey} zurueck (fuer Logging
+        und In-Memory-Cleanup am Node, siehe main.py _inactivity_loop)."""
+        cursor = await self._db.execute(
+            "SELECT name, pubkey FROM mc_contacts "
+            "WHERE COALESCE(last_active, added_at) < datetime('now', ?)",
+            (f"-{days} days",),
+        )
+        removed = [dict(r) for r in await cursor.fetchall()]
+        if removed:
+            await self._db.execute(
+                "DELETE FROM mc_contacts WHERE COALESCE(last_active, added_at) < datetime('now', ?)",
+                (f"-{days} days",),
+            )
+            await self._db.commit()
+        return removed
+
+    async def purge_user_messages(self, name: str, delete_sent_private: bool = True,
+                                  delete_sent_board: bool = True):
+        """Loescht bei einer User-Entfernung (Inaktivitaet, Web-Admin Entfernen/
+        Sperren, Self-Service REMOVE) die private Post: empfangene private
+        Nachrichten immer; gesendete private Nachrichten und eigene
+        Board-Bulletins je einzeln nur wenn die jeweilige users.delete_sent_*
+        Einstellung (Web-Admin) an ist."""
+        name = name.upper()
+        await self._db.execute(
+            "DELETE FROM messages WHERE msg_type = 'P' AND to_call = ?", (name,))
+        if delete_sent_private:
+            await self._db.execute(
+                "DELETE FROM messages WHERE msg_type = 'P' AND from_call = ?", (name,))
+        if delete_sent_board:
+            await self._db.execute(
+                "DELETE FROM messages WHERE msg_type = 'B' AND from_call = ?", (name,))
+        await self._db.commit()
+
+    # --- Ausstehende Freischaltungen (registration.mode=sysop_approval) ----
+
+    async def add_pending_registration(self, prefix_hex: str, pubkey_hex: str,
+                                       name: str, path_hex: str = ""):
+        await self._db.execute(
+            "INSERT OR REPLACE INTO pending_registrations "
+            "(prefix_hex, pubkey, name, path, requested_at) VALUES (?, ?, ?, ?, ?)",
+            (prefix_hex, pubkey_hex.lower(), name.upper(), path_hex,
+             datetime.utcnow().isoformat()),
+        )
+        await self._db.commit()
+
+    async def get_pending_registrations(self) -> list[dict]:
+        cursor = await self._db.execute(
+            "SELECT prefix_hex, pubkey, name, path, requested_at "
+            "FROM pending_registrations ORDER BY requested_at"
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def pop_pending_registration(self, prefix_hex: str) -> Optional[dict]:
+        cursor = await self._db.execute(
+            "SELECT prefix_hex, pubkey, name, path, requested_at "
+            "FROM pending_registrations WHERE prefix_hex = ?", (prefix_hex,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        await self._db.execute(
+            "DELETE FROM pending_registrations WHERE prefix_hex = ?", (prefix_hex,))
+        await self._db.commit()
+        return dict(row)
+
+    async def find_pending_registration_by_name(self, name: str) -> Optional[dict]:
+        cursor = await self._db.execute(
+            "SELECT prefix_hex, pubkey, name, path, requested_at "
+            "FROM pending_registrations WHERE name = ?", (name.upper(),)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def find_pending_registration_by_pubkey(self, pubkey_hex: str) -> Optional[dict]:
+        cursor = await self._db.execute(
+            "SELECT prefix_hex, pubkey, name, path, requested_at "
+            "FROM pending_registrations WHERE pubkey = ?", (pubkey_hex.lower(),)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
     # --- Statistik-Events (fuer Web-Admin) --------------------------------
 
