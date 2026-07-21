@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meshcore BBSng – Befehls-Spickzettel</title>
+<style>
+  :root {
+    --page-bg: #f3f1ec;
+    --page-fg: #24272b;
+    --page-dim: #6b7178;
+    --page-accent: #b6541f;
+    --page-line: rgba(36,39,43,0.14);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page-bg: #17191c;
+      --page-fg: #e7e6e2;
+      --page-dim: #93989f;
+      --page-accent: #e0824a;
+      --page-line: rgba(231,230,226,0.14);
+    }
+  }
+
+  /* Die Karte selbst ist ein fixes, gedrucktes Objekt (Laminierkarte) -- ihr
+     eigenes Farbschema bleibt bewusst unabhaengig vom Seiten-Theme, damit
+     Bildschirm- und Druckansicht identisch aussehen. */
+  :root { --card-bg: #12212e; }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    padding: 32px 16px 64px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 28px;
+  }
+
+  .intro {
+    max-width: 620px;
+    text-align: center;
+  }
+  .intro h1 {
+    font-size: 1.5rem;
+    margin: 0 0 6px;
+    text-wrap: balance;
+    letter-spacing: 0.01em;
+  }
+  .intro p {
+    margin: 0;
+    color: var(--page-dim);
+    font-size: 0.92rem;
+    line-height: 1.5;
+  }
+  .intro code {
+    font-family: ui-monospace, "Cascadia Code", "Consolas", "Liberation Mono", Menlo, monospace;
+    background: var(--page-line);
+    padding: 0.05em 0.35em;
+    border-radius: 3px;
+  }
+
+  button.print-btn {
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 9px 18px;
+    border-radius: 999px;
+    border: 1px solid var(--page-accent);
+    background: transparent;
+    color: var(--page-accent);
+    cursor: pointer;
+  }
+  button.print-btn:hover { background: color-mix(in srgb, var(--page-accent) 12%, transparent); }
+  button.print-btn:focus-visible { outline: 2px solid var(--page-accent); outline-offset: 2px; }
+
+  .stage {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 22px;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Karte: fixes 85.6 x 53.98mm-Seitenverhaeltnis (ISO/IEC 7810 ID-1),  */
+  /* auf dem Bildschirm 3.4x vergroessert fuer Lesbarkeit, im Druck 1:1. */
+  /* ------------------------------------------------------------------ */
+  .card {
+    --mm: 3.4px;              /* Bildschirm-Skalierung: 1mm = 3.4px        */
+    width: calc(85.6 * var(--mm));
+    height: calc(53.98 * var(--mm));
+    border-radius: calc(3.2 * var(--mm));
+    background:
+      radial-gradient(120% 140% at 100% 0%, rgba(95,217,192,0.10), transparent 55%),
+      radial-gradient(90% 120% at 0% 100%, rgba(242,169,78,0.08), transparent 60%),
+      var(--card-bg);
+    color: #eef3f6;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 28px rgba(0,0,0,0.28);
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    padding: calc(3.6 * var(--mm)) calc(4.2 * var(--mm)) calc(2.8 * var(--mm));
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Mesh-Motiv: konzentrische Knoten-Ringe oben rechts, als ruhiges Wasserzeichen */
+  .card::before {
+    content: "";
+    position: absolute;
+    top: calc(-8 * var(--mm));
+    right: calc(-8 * var(--mm));
+    width: calc(30 * var(--mm));
+    height: calc(30 * var(--mm));
+    border-radius: 50%;
+    background:
+      repeating-radial-gradient(circle,
+        rgba(238,243,246,0.05) 0,
+        rgba(238,243,246,0.05) 0.6px,
+        transparent 0.6px,
+        transparent calc(2.4 * var(--mm)));
+    pointer-events: none;
+  }
+
+  .card-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: calc(1 * var(--mm));
+    border-bottom: 1px solid rgba(238,243,246,0.16);
+    padding-bottom: calc(1.1 * var(--mm));
+    margin-bottom: calc(1.4 * var(--mm));
+    position: relative;
+  }
+  .card-title {
+    font-size: calc(2.55 * var(--mm));
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: #eef3f6;
+    white-space: nowrap;
+  }
+  .card-title small {
+    display: block;
+    font-size: calc(1.35 * var(--mm));
+    font-weight: 500;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: #f2a94e;
+    margin-top: 1px;
+  }
+  .card-face-label {
+    font-size: calc(1.3 * var(--mm));
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #5fd9c0;
+    white-space: nowrap;
+  }
+
+  .card-body {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 calc(3 * var(--mm));
+    font-size: calc(1.62 * var(--mm));
+    line-height: 1.32;
+  }
+
+  .grp { break-inside: avoid; margin-bottom: calc(1.3 * var(--mm)); }
+  .grp:last-child { margin-bottom: 0; }
+  .grp h4 {
+    margin: 0 0 calc(0.45 * var(--mm));
+    font-size: calc(1.28 * var(--mm));
+    font-weight: 700;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: #f2a94e;
+  }
+  .row {
+    display: grid;
+    grid-template-columns: calc(15 * var(--mm)) 1fr;
+    column-gap: calc(0.9 * var(--mm));
+    align-items: baseline;
+  }
+  .row + .row { margin-top: calc(0.28 * var(--mm)); }
+  .cmd {
+    font-family: ui-monospace, "Cascadia Code", "Consolas", "Liberation Mono", Menlo, monospace;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: #eef3f6;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .desc { color: #a9bdc9; }
+
+  .card-foot {
+    margin-top: calc(1.2 * var(--mm));
+    padding-top: calc(1 * var(--mm));
+    border-top: 1px solid rgba(238,243,246,0.14);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: calc(2 * var(--mm));
+    font-size: calc(1.28 * var(--mm));
+    color: #7f96a3;
+  }
+  .card-foot b { color: #eef3f6; font-weight: 700; }
+  .dot { color: #5fd9c0; }
+
+  @media print {
+    body { background: #fff; padding: 0; gap: 0; }
+    .intro, .print-btn { display: none; }
+    .stage { gap: 0; }
+    .card {
+      --mm: 1mm;
+      box-shadow: none;
+      border-radius: 3.2mm;
+      page-break-inside: avoid;
+    }
+    @page { size: 90mm 58mm; margin: 2mm; }
+  }
+</style>
+</head>
+<body>
+
+<div class="intro">
+  <h1>Meshcore BBSng – Befehls-Spickzettel</h1>
+  <p>Zum Ausdrucken im Kreditkartenformat (85,6 × 54 mm) und Laminieren. Vorder-
+  und Rückseite unten, Druckdialog stellt jede Seite automatisch passend
+  formatiert (<code>Drucken → Tatsächliche Größe</code>).</p>
+</div>
+
+<button class="print-btn" onclick="window.print()">Drucken / als PDF speichern</button>
+
+<div class="stage">
+
+  <!-- Vorderseite -->
+  <section class="card" aria-label="Cheatsheet Vorderseite">
+    <div class="card-head">
+      <div class="card-title">Meshcore BBS<small>Befehls-Spickzettel</small></div>
+      <div class="card-face-label">Vorne</div>
+    </div>
+    <div class="card-body">
+      <div>
+        <div class="grp">
+          <h4>Menü</h4>
+          <div class="row"><span class="cmd">H / ?</span><span class="desc">Hauptmenü</span></div>
+          <div class="row"><span class="cmd">N</span><span class="desc">Nachrichten</span></div>
+          <div class="row"><span class="cmd">B</span><span class="desc">Board</span></div>
+          <div class="row"><span class="cmd">W</span><span class="desc">Wetter</span></div>
+          <div class="row"><span class="cmd">I</span><span class="desc">Info</span></div>
+          <div class="row"><span class="cmd">A</span><span class="desc">Account</span></div>
+        </div>
+        <div class="grp">
+          <h4>Nachrichten</h4>
+          <div class="row"><span class="cmd">NL</span><span class="desc">Liste (neueste)</span></div>
+          <div class="row"><span class="cmd">NLO&lt;n&gt;</span><span class="desc">weitere ab n</span></div>
+          <div class="row"><span class="cmd">R&lt;nr&gt;</span><span class="desc">Nachricht lesen</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="grp">
+          <h4>Senden</h4>
+          <div class="row"><span class="cmd">S TO|Betr|Text</span><span class="desc">privat senden</span></div>
+          <div class="row"><span class="cmd">RS&lt;nr&gt;|Text</span><span class="desc">Antwort (auto TO/Betreff)</span></div>
+          <div class="row"><span class="cmd">SB Thema|Text</span><span class="desc">Bulletin posten</span></div>
+        </div>
+        <div class="grp">
+          <h4>Board &amp; Löschen</h4>
+          <div class="row"><span class="cmd">BL</span><span class="desc">Board-Liste</span></div>
+          <div class="row"><span class="cmd">BLO&lt;n&gt;</span><span class="desc">weitere ab n</span></div>
+          <div class="row"><span class="cmd">ND&lt;nr&gt; / K&lt;nr&gt;</span><span class="desc">löschen (eigene)</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-foot">
+      <span>Groß/klein egal <span class="dot">·</span> Zahl anhängen: <b>R5</b> = <b>R 5</b></span>
+    </div>
+  </section>
+
+  <!-- Rückseite -->
+  <section class="card" aria-label="Cheatsheet Rückseite">
+    <div class="card-head">
+      <div class="card-title">Meshcore BBS<small>Befehls-Spickzettel</small></div>
+      <div class="card-face-label">Hinten</div>
+    </div>
+    <div class="card-body">
+      <div>
+        <div class="grp">
+          <h4>Wetter</h4>
+          <div class="row"><span class="cmd">WX</span><span class="desc">aktuell</span></div>
+          <div class="row"><span class="cmd">WX1</span><span class="desc">Vorhersage morgen</span></div>
+          <div class="row"><span class="cmd">WX3</span><span class="desc">Vorhersage 3 Tage</span></div>
+        </div>
+        <div class="grp">
+          <h4>Info</h4>
+          <div class="row"><span class="cmd">SI</span><span class="desc">Sysinfo</span></div>
+          <div class="row"><span class="cmd">O</span><span class="desc">wer online</span></div>
+          <div class="row"><span class="cmd">LU</span><span class="desc">Userliste</span></div>
+          <div class="row"><span class="cmd">PING</span><span class="desc">Repeaterliste</span></div>
+          <div class="row"><span class="cmd">PING &lt;Name&gt;</span><span class="desc">Traceroute</span></div>
+        </div>
+      </div>
+      <div>
+        <div class="grp">
+          <h4>Account</h4>
+          <div class="row"><span class="cmd">MI</span><span class="desc">eigene Account-Info</span></div>
+          <div class="row"><span class="cmd">MC &lt;mail&gt;</span><span class="desc">Mailkontakt setzen</span></div>
+          <div class="row"><span class="cmd">REMOVE</span><span class="desc">abmelden (nur DM)</span></div>
+        </div>
+        <div class="grp">
+          <h4>Pubkey &amp; Sicherheit</h4>
+          <div class="row"><span class="cmd">PK</span><span class="desc">eigener Pubkey</span></div>
+          <div class="row"><span class="cmd">PK &lt;Name&gt;</span><span class="desc">Pubkey e. Kontakts</span></div>
+          <div class="row"><span class="cmd">OK &lt;Code&gt;</span><span class="desc">Sicherheitshinweis bestät.</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-foot">
+      <span>Nur <b>Pubkey</b> beweist Identität <span class="dot">·</span> Name ist fälschbar</span>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

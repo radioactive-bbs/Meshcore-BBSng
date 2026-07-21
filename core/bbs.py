@@ -301,6 +301,20 @@ class BBSCore:
             f"{body}")
         return [f"Msg #{msg_id} an {to_call} gespeichert. 73!"]
 
+    async def cmd_reply(self, callsign: str, msg_id: int, body: str) -> list[str]:
+        """Antwortet auf eine empfangene private Nachricht, ohne Empfaenger/Betreff
+        erneut eintippen zu muessen: Empfaenger = urspruenglicher Absender, Betreff
+        = Original-Betreff mit 'Re: '-Praefix (nicht doppelt, falls schon vorhanden).
+        Nur fuer private Nachrichten ('P') und nur durch den tatsaechlichen
+        Empfaenger nutzbar (bewusst keine Board-Bulletins - dieselbe 'nicht
+        gefunden'-Logik wie bei cmd_read, damit fremde Postfaecher nicht per
+        RS<n>-Enumeration aufgezaehlt werden koennen)."""
+        msg = await self.db.get_message(msg_id)
+        if not msg or msg.msg_type != "P" or callsign.upper() != msg.to_call.upper():
+            return [f"Nachricht #{msg_id} nicht gefunden."]
+        subject = msg.subject if msg.subject.upper().startswith("RE:") else f"Re: {msg.subject}"
+        return await self.cmd_send(callsign, msg.from_call, subject, body)
+
     async def cmd_bulletin(self, from_call: str, topic: str, body: str) -> list[str]:
         msg = Message(
             id=None,

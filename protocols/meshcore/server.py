@@ -1082,10 +1082,27 @@ class MeshCoreServer(BaseProtocol):
           WX   Wetter      SI Sysinfo      O  Online
           BL   Board-Liste  BLO<n> weitere  NL Nachrichten-Liste  NLO<n> weitere
           R<n> Lesen        S TO|Betr|Text  SB Thema|Text
+          RS<n>|Text  Antwort auf empfangene private Nachricht <n> (Empfaenger/Betreff automatisch)
           K<n>/ND<n> Loeschen (nur eigene: erhaltene Nachrichten bzw. eigene Bulletins)
           MI   Meine Info  MC mail         REMOVE Abmelden
           PK   eigener Pubkey (voll)   PK <Name>  voller Pubkey eines Kontakts
         """
+        # RS<n>|Text: Nummer und Pipe-Text haengen direkt aneinander (wie K<n>/ND<n>),
+        # der restliche Text nach dem Pipe darf aber Leerzeichen enthalten -- der
+        # generische Leerzeichen-Split unten wuerde das falsch zerlegen, daher hier
+        # per eigenem Regex VOR dem generischen Parsing behandelt.
+        m_reply = re.match(r'^RS(\d+)\|(.*)$', text.strip(), re.IGNORECASE | re.DOTALL)
+        if m_reply:
+            if not self.bbs.feature_enabled("messages"):
+                return [f"Unbekannt: RS  H=Hilfe"]
+            gate = await self._pubkey_ack_gate(prefix_hex, callsign)
+            if gate:
+                return gate
+            body = m_reply.group(2).strip()
+            if not body:
+                return ["Format: RS<Nummer>|Text"]
+            return await self.bbs.cmd_reply(callsign, int(m_reply.group(1)), body)
+
         parts = text.strip().split(None, 1)
         if not parts:
             return []

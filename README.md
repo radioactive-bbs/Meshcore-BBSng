@@ -36,7 +36,7 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 ## Features
 
 ### BBS-Kern
-- **Private Nachrichten** — Postfach je Rufzeichen, konfigurierbares Limit, AES-256-GCM-verschlüsselt at-rest
+- **Private Nachrichten** — Postfach je Rufzeichen, konfigurierbares Limit, AES-256-GCM-verschlüsselt at-rest. Direktantwort per `RS<nr>|Text` ohne erneute Eingabe von Empfänger/Betreff (nur auf tatsächlich empfangene Nachrichten)
 - **Proaktive Zustellung** — neue private Nachrichten werden dem Empfänger sofort per Direktnachricht mit vollem Inhalt zugestellt (kein Umweg über `NL`/`R<n>` nötig, gilt weiter als ungelesen bis explizit gelesen), plus eine einmalige Erinnerung 3 Tage vor Löschung einer ungelesenen Nachricht (Löschfrist konfigurierbar, Default 30 Tage). Ist der Empfänger gerade nicht erreichbar, zeigt das Hauptmenü beim nächsten Login einen Badge mit der Anzahl ungelesener Nachrichten
 - **Board/Bulletins** — öffentliche Nachrichten, sticky-Flag (nie automatisch gelöscht), automatische Aufräumung nach konfigurierbarer Frist
 - **Self-Service-Registrierung** — Nutzer registrieren sich per `add` direkt über den MeshCore-Kanal, kein manuelles Anlegen durch den SysOp nötig. Drei Modi wählbar (Web-Admin -> Einstellungen): Pubkey-Bestätigung per Direktnachricht-Challenge (Status quo, verhindert dass sich jemand einen fremden Rufzeichen-Namen unter dem eigenen Pubkey sichert), sofortige Freischaltung ohne Prüfung, oder manuelle Freischaltung durch den SysOp im Web-Admin (siehe [Self-Service-Registrierung](#self-service-registrierung-nur-meshcore-kanal))
@@ -72,6 +72,25 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 
 Alle Befehle laufen über den MeshCore-Kanal (Broadcast) bzw. Direktnachrichten. Groß-/Kleinschreibung ist egal.
 
+### Cheatsheet (Kurzübersicht)
+
+| Befehl | | Befehl | |
+|---|---|---|---|
+| `H` / `?` | Hauptmenü | `WX` / `WX1` / `WX3` | Wetter: aktuell / morgen / 3 Tage |
+| `N` · `B` · `W` · `I` · `A` | Menüs: Nachrichten/Board/Wetter/Info/Account | `SI` | Sysinfo |
+| `NL` / `NLO <n>` | Nachrichtenliste / weitere ab `n` | `O` | Wer online |
+| `BL` / `BLO <n>` | Board-Liste / weitere ab `n` | `LU` | Userliste |
+| `R <nr>` | Nachricht/Board-Eintrag lesen | `PING` / `PING <Name>` | Repeaterliste / Traceroute |
+| `S TO\|Betreff\|Text` | Private Nachricht senden | `PK` / `PK <Name>` | Eigener / fremder Pubkey |
+| `RS<nr>\|Text` | Antwort (Empfänger/Betreff automatisch) | `MI` | Eigene Account-Info |
+| `SB Thema\|Text` | Board-Bulletin veröffentlichen | `MC <mail>` | Mailkontakt setzen |
+| `ND <nr>` / `K <nr>` | Nachricht/Bulletin löschen (eigene) | `OK <Code>` | Pubkey-Sicherheitshinweis bestätigen |
+| `add NAME:PUBKEY` | Registrieren (nur Kanal) | `REMOVE` | Abmelden (nur Direktnachricht) |
+
+Zahlenargumente (`R`, `NLO`, `BLO`, `ND`, `K`) auch direkt angehängt: `R5` = `R 5`. Details, Berechtigungen und Grenzfälle siehe die Tabellen unten.
+
+Zum Ausdrucken gibt es außerdem eine Kreditkarten-große Steckkarten-Version (Vorder-/Rückseite, zum Ausschneiden und Laminieren): [`docs/cheatsheet.html`](docs/cheatsheet.html) im Browser öffnen und drucken (`Drucken → Tatsächliche Größe`).
+
 ### Navigation (zeigt Untermenü)
 
 | Befehl | Bedeutung |
@@ -93,6 +112,7 @@ Alle Befehle laufen über den MeshCore-Kanal (Broadcast) bzw. Direktnachrichten.
 | `BLO <n>` | Weitere Board-Einträge ab Position `n` |
 | `R <nr>` | Nachricht/Board-Eintrag `<nr>` lesen |
 | `S TO\|Betreff\|Text` | Private Nachricht senden |
+| `RS<nr>\|Text` | Antwort auf empfangene private Nachricht `<nr>` — Empfänger und Betreff (mit „Re: "-Präfix) werden automatisch aus der Original-Nachricht übernommen, nur für den tatsächlichen Empfänger nutzbar |
 | `SB Thema\|Text` | Board-Nachricht (Bulletin) veröffentlichen |
 | `ND <nr>` / `K <nr>` | Nachricht `<nr>` löschen — bei privaten Nachrichten nur der Empfänger, bei Board-Bulletins nur der Autor, zusätzlich immer der SysOp und die konfigurierten Co-SysOps (auch als `ND<nr>`/`K<nr>` ohne Leerzeichen) |
 
