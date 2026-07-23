@@ -1,6 +1,7 @@
 import asyncio
 import glob
 import logging
+import os
 import random
 import re
 import secrets
@@ -109,20 +110,67 @@ class _Pending:
     is_flood: bool = False # True wenn via Flood gesendet – kein Retry, nur best-effort
 
 
-def _chunk(lines: list[str], max_len: int) -> list[str]:
+def _utf8_len(text: str) -> int:
+    """Byte-Laenge in UTF-8. Das MeshCore-Paketlimit zaehlt Bytes, nicht Zeichen –
+    ein 150-*Zeichen*-Chunk mit Umlauten/Emojis kann deutlich ueber 150 Byte liegen."""
+    return len(text.encode("utf-8"))
+
+
+def _split_to_bytes(text: str, max_bytes: int) -> list[str]:
+    """Zerlegt einen zu langen String in Stuecke von hoechstens max_bytes UTF-8-Bytes,
+    ohne je eine Mehrbyte-Sequenz (Umlaut/Emoji) zu zerschneiden – getrennt wird nur
+    an Zeichengrenzen. Ein einzelnes Zeichen, das allein groesser als max_bytes ist,
+    bleibt als eigenes (leicht ueberzaehliges) Stueck erhalten statt zerschnitten zu werden."""
+    parts: list[str] = []
+    current = ""
+    cur_bytes = 0
+    for ch in text:
+        cb = len(ch.encode("utf-8"))
+        if current and cur_bytes + cb > max_bytes:
+            parts.append(current)
+            current, cur_bytes = "", 0
+        current += ch
+        cur_bytes += cb
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _truncate_to_bytes(text: str, max_bytes: int) -> str:
+    """Kuerzt text auf hoechstens max_bytes UTF-8-Bytes, ohne eine Mehrbyte-Sequenz
+    zu zerschneiden (schneidet an der letzten passenden Zeichengrenze)."""
+    if _utf8_len(text) <= max_bytes:
+        return text
+    out = ""
+    used = 0
+    for ch in text:
+        cb = len(ch.encode("utf-8"))
+        if used + cb > max_bytes:
+            break
+        out += ch
+        used += cb
+    return out
+
+
+def _chunk(lines: list[str], max_bytes: int) -> list[str]:
+    """Packt Zeilen in Chunks von hoechstens max_bytes UTF-8-Bytes. Das Limit ist
+    bewusst byte- und nicht zeichenbasiert: build_send_txt/build_send_channel_msg
+    kappen den Text byte-genau (Firmware-Limit), sodass eine zeichenbasierte Grenze
+    mehrsprachigen Text mit Umlauten/Emojis still abgeschnitten haette. Zu lange
+    Einzelzeilen werden an Zeichengrenzen aufgeteilt."""
     chunks: list[str] = []
     current = ""
     for line in lines:
         sep = "\n" if current else ""
-        if len(current) + len(sep) + len(line) <= max_len:
+        if _utf8_len(current) + _utf8_len(sep) + _utf8_len(line) <= max_bytes:
             current += sep + line
         else:
             if current:
                 chunks.append(current)
-            while len(line) > max_len:
-                chunks.append(line[:max_len])
-                line = line[max_len:]
-            current = line
+                current = ""
+            pieces = _split_to_bytes(line, max_bytes)
+            chunks.extend(pieces[:-1])
+            current = pieces[-1] if pieces else ""
     if current:
         chunks.append(current)
     return chunks
@@ -183,6 +231,9 @@ class MeshCoreServer(BaseProtocol):
         self._reinit_in_progress: bool = False
         self._reconnecting: bool = False
         self._device_info_seen: bool = False
+        # True, sobald der Node RESP_NO_MORE_MSGS meldet -- laesst _fetch_messages den
+        # Drain-Loop sofort beenden statt stur alle 20 SYNCs abzusenden.
+        self._queue_drained: bool = False
         self._tasks: set[asyncio.Task] = set()
 
         mc = self.config.get("meshcore", {})
@@ -191,7 +242,10 @@ class MeshCoreServer(BaseProtocol):
         self.channel        = mc.get("channel",             0)
         self.channel_name   = mc.get("channel_name",        f"CH{mc.get('channel', 0)}")
         self.channel_region = mc.get("channel_region",      "")
-        self.max_len        = min(mc.get("max_message_length", MAX_MSG_LEN), 150)
+        # Byte-Budget je DM (nicht Zeichen!). max(1, ...) verhindert eine Entartung
+        # in _chunk, falls max_message_length versehentlich auf <=0 gesetzt wird
+        # (die Web-UI erzwingt ohnehin 50..150).
+        self.max_len        = max(1, min(mc.get("max_message_length", MAX_MSG_LEN), 150))
         self.chunk_delay    = mc.get("chunk_delay",         2.0)
         self.max_chunks     = mc.get("max_chunks",          5)
         self.tx_power       = mc.get("tx_power",            None)   # dBm; None = Node-Wert beibehalten
@@ -209,7 +263,6 @@ class MeshCoreServer(BaseProtocol):
 
     def _find_port(self) -> str:
         """Gibt den konfigurierten Port zurück, oder sucht ttyACM*/ttyUSB* als Fallback."""
-        import os
         if os.path.exists(self.port):
             return self.port
         candidates = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
@@ -500,16 +553,7 @@ class MeshCoreServer(BaseProtocol):
         if not found:
             return False
         prefix = bytes.fromhex(found[0])[:6]
-        chunks = _chunk(text.splitlines() or [text], self.max_len)
-        if len(chunks) > self.max_chunks:
-            # Stille Kuerzung waere bei zugestelltem Nachrichteninhalt (cmd_send)
-            # irrefuehrend -- Empfaenger muss erkennen, dass der Text nicht vollstaendig
-            # ankam (gleiches Chunk-Limit wie bei R<id>, der Text selbst bleibt aber
-            # unveraendert in der DB gespeichert).
-            suffix = " [+]"
-            chunks = chunks[:self.max_chunks]
-            chunks[-1] = chunks[-1][:self.max_len - len(suffix)] + suffix
-        await self._send_dm_chunks(prefix, chunks)
+        await self._send_dm_chunks(prefix, self._finalize_chunks(text.splitlines() or [text]))
         return True
 
     async def sysop_dm(self, name: str, text: str) -> bool:
@@ -767,7 +811,7 @@ class MeshCoreServer(BaseProtocol):
                 logger.info("Kontakt geladen: %s (%s) path=%s", contact.name, key, path_info)
 
         elif ptype == RESP_NO_MORE_MSGS:
-            pass   # Queue leer – kein weiteres CMD_SYNC_NEXT_MESSAGE noetig
+            self._queue_drained = True   # Queue leer – _fetch_messages bricht den Drain-Loop ab
 
         elif ptype == RESP_DEFAULT_FLOOD_SCOPE:
             scope = parse_default_flood_scope(data)
@@ -849,10 +893,15 @@ class MeshCoreServer(BaseProtocol):
     # ------------------------------------------------------------------
 
     async def _fetch_messages(self):
-        """Ruft Nachrichten ab bis keine mehr vorhanden."""
-        for _ in range(20):    # max 20 Nachrichten am Stueck
+        """Ruft Nachrichten ab bis keine mehr vorhanden (max. 20 am Stueck). Bricht
+        ab, sobald der Node RESP_NO_MORE_MSGS gemeldet hat (self._queue_drained),
+        statt stur 20 SYNCs zu senden."""
+        self._queue_drained = False
+        for _ in range(20):
             await self._send(build_sync_next_message())
             await asyncio.sleep(0.3)
+            if self._queue_drained:
+                break
 
     async def _poll_loop(self):
         """Polling-Fallback: fragt alle 5s nach neuen Nachrichten,
@@ -910,7 +959,7 @@ class MeshCoreServer(BaseProtocol):
             age = time.time() - self._last_rx_ts
             if age > 90 and not self._reinit_in_progress:
                 logger.warning("Watchdog: Kein Frame seit %.0fs – sende Initialisierungssequenz", age)
-                asyncio.create_task(self._full_reinit())
+                self._create_tracked_task(self._full_reinit())
 
     async def _full_reinit(self):
         """Vollständige Neuinitialisierung inkl. APP_START (z.B. nach Watchdog-Timeout)."""
@@ -1058,13 +1107,7 @@ class MeshCoreServer(BaseProtocol):
         if not response_lines:
             return
 
-        chunks = _chunk(response_lines, self.max_len)
-        if len(chunks) > self.max_chunks:
-            suffix = " [+]"
-            chunks  = chunks[:self.max_chunks]
-            chunks[-1] = chunks[-1][:self.max_len - len(suffix)] + suffix
-
-        await self._send_dm_chunks(msg.pubkey_prefix, chunks)
+        await self._send_dm_chunks(msg.pubkey_prefix, self._finalize_chunks(response_lines))
 
     # ------------------------------------------------------------------
     # BBS-Dispatcher
@@ -1724,6 +1767,19 @@ class MeshCoreServer(BaseProtocol):
             finally:
                 self._sent_waiter = None
 
+    def _finalize_chunks(self, lines: list[str]) -> list[str]:
+        """Zerlegt lines byte-genau in Chunks (max_len) und deckelt sie auf max_chunks.
+        Das letzte Stueck wird bei Ueberlauf byte-sicher gekuerzt und mit ' [+]' als
+        unvollstaendig markiert -- stille Kuerzung waere bei zugestelltem Inhalt
+        irrefuehrend (der Empfaenger muss erkennen, dass nicht alles ankam; der Text
+        selbst bleibt in der DB vollstaendig)."""
+        chunks = _chunk(lines, self.max_len)
+        if len(chunks) > self.max_chunks:
+            suffix = " [+]"
+            chunks = chunks[:self.max_chunks]
+            chunks[-1] = _truncate_to_bytes(chunks[-1], self.max_len - _utf8_len(suffix)) + suffix
+        return chunks
+
     async def _send_dm_chunks(self, pubkey_prefix: bytes, chunks: list[str]):
         """Sendet DM-Chunks und registriert sie fuer ACK-Tracking (expected_ack je Chunk)."""
         prefix_hex = pubkey_prefix.hex()
@@ -1799,7 +1855,11 @@ class MeshCoreServer(BaseProtocol):
                     is_flood=pend.is_flood)
 
     async def _reply(self, pubkey_prefix: bytes, text: str):
-        await self._send_dm_chunks(pubkey_prefix, [text])
+        # Ueber _finalize_chunks statt [text]: lange Antworten (z.B. mehrsaetzige
+        # Willkommens-/Bestaetigungstexte ueber 150 Byte) wurden sonst von
+        # build_send_txt still auf 150 Byte abgeschnitten -- jetzt byte-genau in
+        # mehrere DMs aufgeteilt.
+        await self._send_dm_chunks(pubkey_prefix, self._finalize_chunks(text.splitlines() or [text]))
 
     async def _reply_channel(self, text: str):
         await self._send(build_send_channel_msg(self.channel, text))

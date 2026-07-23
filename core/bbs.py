@@ -1,11 +1,12 @@
 import logging
-import re
 from datetime import datetime
 from typing import Awaitable, Callable, Optional
 
 from core.message import Message
 from core.weather import fetch_forecast_1day, fetch_forecast_3days, fetch_weather
 from core import sanitize
+from core.timeutil import now_utc
+from core.validation import is_valid_email
 from storage.database import Database
 
 logger = logging.getLogger(__name__)
@@ -15,10 +16,6 @@ logger = logging.getLogger(__name__)
 # zurueck, wenn der Name nicht als MeshCore-Kontakt registriert ist (z.B. Tippfehler
 # oder noch nicht registrierter Empfaenger) - kein Fehler, nur "konnte nicht benachrichtigen".
 NotifyDM = Callable[[str, str], Awaitable[bool]]
-
-# Einfache Mail-Validierung fuer den MC-Befehl (aus dem Mesh, angreiferkontrolliert):
-# ein @, kein Whitespace/Steuerzeichen, plausible Laenge. Kein RFC-5322-Anspruch.
-_MAIL_RE = re.compile(r'^[^\s@]{1,40}@[^\s@]{1,40}\.[^\s@]{2,20}$')
 
 # Schaltbare BBS-Funktionen (Web-Admin: Einstellungen -> Funktionen).
 # key -> (Label fuer die Web-UI, Default)
@@ -183,18 +180,19 @@ class BBSCore:
         return ["BL = Board Liste, NL = Nachrichten Liste"]
 
     async def cmd_list_board(self, offset: Optional[int] = None) -> list[str]:
-        msgs = await self.db.get_messages()
-        board_msgs = [m for m in msgs if m.msg_type == "B"]
-        sticky_msgs = sorted((m for m in board_msgs if m.sticky), key=lambda m: -m.id)
-        other_msgs = sorted((m for m in board_msgs if not m.sticky), key=lambda m: -m.id)
-
+        # SQL-seitig gefiltert/paginiert statt die ganze Tabelle zu laden: Board-
+        # Nachrichten fassen 'P'-Zeilen gar nicht mehr an (kein Entschluesseln
+        # fremder Postfaecher). Sticky bleibt aus der Offset-Paginierung ausgenommen
+        # und nur auf Seite 1 sichtbar -- daher getrennte Queries statt LIMIT/OFFSET.
+        total_other = await self.db.count_board_nonsticky()
         if offset is None:
-            page = sticky_msgs + other_msgs[:self.FIRST_PAGE]
+            sticky_msgs = await self.db.list_board_sticky()
+            page = sticky_msgs + await self.db.list_board_nonsticky(self.FIRST_PAGE, 0)
         else:
             # offset ist 1-basiert (BLO 10 -> Nachricht Nr. 10 der Liste, lueckenlos
             # anschliessend an die "juengsten 9" der ersten Seite).
             start = max(offset - 1, 0)
-            page = other_msgs[start:start + self.PAGE_SIZE]
+            page = await self.db.list_board_nonsticky(self.PAGE_SIZE, start)
 
         if not page:
             return ["Keine Board-Nachrichten." if offset is None
@@ -213,25 +211,22 @@ class BBSCore:
             date = m.created_at.strftime("%d.%m.%y")
             subject = m.subject if len(m.subject) <= 15 else m.subject[:15] + "..."
             lines.append(f"{m.id:>3} {pin:<6} {date:<8} {m.from_call:<9} {subject}")
-        if offset is None and len(other_msgs) > self.FIRST_PAGE:
-            lines.append(f"BLO {self.FIRST_PAGE + 1} fuer weitere ({len(other_msgs)} gesamt)")
-        elif offset is not None and len(other_msgs) > start + self.PAGE_SIZE:
-            lines.append(f"BLO {offset + self.PAGE_SIZE} fuer weitere ({len(other_msgs)} gesamt)")
+        if offset is None and total_other > self.FIRST_PAGE:
+            lines.append(f"BLO {self.FIRST_PAGE + 1} fuer weitere ({total_other} gesamt)")
+        elif offset is not None and total_other > start + self.PAGE_SIZE:
+            lines.append(f"BLO {offset + self.PAGE_SIZE} fuer weitere ({total_other} gesamt)")
         return lines
 
     async def cmd_list_personal(self, callsign: str, offset: Optional[int] = None) -> list[str]:
         callsign = callsign.upper()
-        msgs = await self.db.get_messages(callsign)
-        personal_msgs = sorted(
-            (m for m in msgs if m.msg_type == "P" and m.to_call == callsign),
-            key=lambda m: -m.id)
-        total = len(personal_msgs)
-
+        # SQL-seitig paginiert: es wird nur die angezeigte Seite geladen und
+        # entschluesselt, nicht das gesamte Postfach.
+        total = await self.db.count_personal_messages(callsign)
         if offset is None:
-            page = personal_msgs[:self.FIRST_PAGE]
+            page = await self.db.list_personal_page(callsign, self.FIRST_PAGE, 0)
         else:
             start = max(offset - 1, 0)
-            page = personal_msgs[start:start + self.PAGE_SIZE]
+            page = await self.db.list_personal_page(callsign, self.PAGE_SIZE, start)
 
         if not page:
             return ["Keine Nachrichten." if offset is None
@@ -286,7 +281,7 @@ class BBSCore:
             from_call=from_call.upper(),
             subject=subject,
             body=body,
-            created_at=datetime.utcnow(),
+            created_at=now_utc(),
         )
         msg_id = await self.db.save_message(msg)
         # Inhalt direkt per Push-DM zustellen statt nur eines Hinweises -- der
@@ -323,7 +318,7 @@ class BBSCore:
             from_call=from_call.upper(),
             subject=topic,
             body=body,
-            created_at=datetime.utcnow(),
+            created_at=now_utc(),
         )
         msg_id = await self.db.save_message(msg)
         return [f"Bulletin #{msg_id} gespeichert. 73!"]
@@ -343,11 +338,22 @@ class BBSCore:
         if not msg:
             return [f"Nachricht #{msg_id} nicht gefunden."]
         caller = callsign.upper()
-        # Private Nachricht: gehoert dem Empfaenger (sein Postfach) -- Board-Bulletin:
-        # gehoert dem Autor (kein Einzelempfaenger, to_call ist "ALL").
-        owner = msg.to_call.upper() if msg.msg_type == "P" else msg.from_call.upper()
-        if caller != owner and not self._is_sysop(caller):
-            return ["Keine Berechtigung."]
+        is_sysop = self._is_sysop(caller)
+        if msg.msg_type == "P":
+            # Wer die private Nachricht nicht einmal lesen darf (weder Empfaenger noch
+            # Absender), bekommt dieselbe "nicht gefunden"-Antwort wie in cmd_read --
+            # sonst liesse sich per K<n>/ND<n> aufzaehlen, welche fremden Postfach-IDs
+            # existieren (Enumerierung). Loeschen darf danach nur der Empfaenger (sein
+            # Postfach); der Absender darf die Nachricht zwar lesen, aber nicht loeschen.
+            if caller not in (msg.to_call.upper(), msg.from_call.upper()) and not is_sysop:
+                return [f"Nachricht #{msg_id} nicht gefunden."]
+            if caller != msg.to_call.upper() and not is_sysop:
+                return ["Keine Berechtigung."]
+        else:
+            # Board-Bulletin: Existenz ist oeffentlich (per BL sichtbar), daher kein
+            # Masking noetig. Loeschen darf nur der Autor oder ein SysOp.
+            if caller != msg.from_call.upper() and not is_sysop:
+                return ["Keine Berechtigung."]
         await self.db.delete_message(msg_id)
         return [f"Nachricht #{msg_id} geloescht."]
 
@@ -415,7 +421,7 @@ class BBSCore:
     async def cmd_set_mail(self, callsign: str, mail: str) -> list[str]:
         # Steuerzeichen entfernen und Format pruefen – Wert stammt aus dem Mesh.
         mail = sanitize.for_log(mail).strip()
-        if not _MAIL_RE.match(mail):
+        if not is_valid_email(mail):
             return ["Ungueltige Mailadresse. Format: MC name@domain.de"]
         await self.db.set_mc_contact_mail(callsign, mail)
         return [f"Mailkontakt gespeichert:\n{mail}"]

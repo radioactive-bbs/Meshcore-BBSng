@@ -19,8 +19,9 @@ import secrets as pysecrets
 import shutil
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import quote
 
 import yaml
 from aiohttp import web
@@ -28,7 +29,8 @@ from aiohttp import web
 from core import crypto, webtls
 from core.bbs import FEATURES
 from core.message import Message
-from core.validation import USERNAME_RE
+from core.timeutil import now_utc
+from core.validation import USERNAME_RE, is_valid_email
 from protocols.base import BaseProtocol
 from storage.database import Database
 
@@ -253,6 +255,9 @@ class WebAdminServer(BaseProtocol):
         self._sessions: dict[str, tuple[float, str, str]] = {}
         # IP -> (fail_count, window_start, locked_until) fuer den Login-Brute-Force-Schutz
         self._login_fails: dict[str, tuple[int, float, float]] = {}
+        # Wegwerf-Hash fuer den Konstantzeit-Vergleich bei unbekanntem Benutzernamen
+        # (verhindert User-Enumeration ueber die Antwortzeit, siehe _check_login).
+        self._dummy_hash = crypto.hash_password(pysecrets.token_hex(16))
         self._runner: Optional[web.AppRunner] = None
         self._started_at = time.time()
 
@@ -374,7 +379,12 @@ class WebAdminServer(BaseProtocol):
         if username == "admin" or not username:
             return self._check_password(candidate)
         stored = self._admins.get(username)
-        return bool(stored) and crypto.verify_password(candidate, stored)
+        if not stored:
+            # Konstantzeit-Dummy-Vergleich: ein unbekannter Benutzername soll nicht
+            # merklich schneller abgelehnt werden als ein existierender (Enumeration).
+            crypto.verify_password(candidate, self._dummy_hash)
+            return False
+        return crypto.verify_password(candidate, stored)
 
     def _check_password(self, candidate: str) -> bool:
         """Prueft das Passwort: gesetzter scrypt-Hash (webconfig/Installer) vor
@@ -437,6 +447,15 @@ class WebAdminServer(BaseProtocol):
 
     def _clear_login_fails(self, ip: str):
         self._login_fails.pop(ip, None)
+
+    def _prune_sessions(self):
+        """Entfernt abgelaufene Sessions aus dem RAM-Cache. Ohne das wuerde er ueber
+        die Uptime hinweg wachsen, da abgelaufene Tokens sonst nur beim erneuten
+        Zugriff auf genau dieses Token verworfen werden (siehe _auth_middleware)."""
+        now = time.time()
+        stale = [tok for tok, entry in self._sessions.items() if now - entry[0] > SESSION_TTL]
+        for tok in stale:
+            del self._sessions[tok]
 
     # --- Erststart-Passwort ------------------------------------------------
 
@@ -545,6 +564,7 @@ class WebAdminServer(BaseProtocol):
             await asyncio.sleep(1.0)  # einfache Brute-Force-Bremse (zusaetzlich zum IP-Lockout)
             raise web.HTTPFound("/login?err=1")
         self._clear_login_fails(ip)
+        self._prune_sessions()
         token = pysecrets.token_hex(32)
         self._sessions[token] = (time.time(), pysecrets.token_hex(32), username)
         resp = web.HTTPFound("/")
@@ -598,7 +618,6 @@ class WebAdminServer(BaseProtocol):
 
     @staticmethod
     def _redirect(path: str, ok: str = "", err: str = "", tab: str = "") -> web.HTTPFound:
-        from urllib.parse import quote
         params = []
         if tab:
             params.append(f"tab={quote(tab)}")
@@ -640,8 +659,8 @@ class WebAdminServer(BaseProtocol):
     async def page_dashboard(self, request: web.Request) -> web.Response:
         mc = self.meshcore.status_snapshot() if self.meshcore else None
         users = await self.db.count_mc_contacts()
-        msgs = await self.db.get_messages()
-        unread = sum(1 for m in msgs if not m.read and m.msg_type == "P")
+        total_msgs = await self.db.count_messages()
+        unread = await self.db.count_all_unread_personal()
         uptime = _fmt_age(time.time() - self._started_at).replace("vor ", "")
 
         cards = []
@@ -665,7 +684,7 @@ class WebAdminServer(BaseProtocol):
             cards.append(("MeshCore", "<span class='err'>deaktiviert</span>"))
         cards += [
             ("Registrierte User", str(users)),
-            ("Nachrichten", f"{len(msgs)} <small>({unread} ungelesen)</small>"),
+            ("Nachrichten", f"{total_msgs} <small>({unread} ungelesen)</small>"),
             ("BBS-Uptime", _esc(uptime)),
             ("SysOp", _esc(self.config.get("sysop", "-"))),
             ("QTH", f"{_esc(self.config.get('qth', '-'))} <small>{_esc(self.config.get('locator', ''))}</small>"),
@@ -1012,7 +1031,6 @@ class WebAdminServer(BaseProtocol):
         for tok in stale:
             del self._sessions[tok]
         logger.info("Web-Admin: Passwort geaendert (%s)", username)
-        from urllib.parse import quote
         return web.HTTPFound("/login?msg=" + quote("Passwort geaendert – bitte neu anmelden."))
 
     # ------------------------------------------------------------------
@@ -1345,7 +1363,12 @@ class WebAdminServer(BaseProtocol):
     async def do_user_mail(self, request: web.Request) -> web.Response:
         form = await request.post()
         name = str(form.get("name", "")).strip()
-        await self.db.set_mc_contact_mail(name, str(form.get("mail", "")))
+        mail = str(form.get("mail", "")).strip()
+        if not await self.db.find_mc_contact_by_name(name):
+            return self._redirect("/users", err=f"{name} nicht gefunden")
+        if mail and not is_valid_email(mail):
+            return self._redirect("/users", err="Ungueltige Mailadresse (Format: name@domain.tld)")
+        await self.db.set_mc_contact_mail(name, mail)
         return self._redirect("/users", ok=f"Mail fuer {name.upper()} gespeichert")
 
     async def do_ack_grant(self, request: web.Request) -> web.Response:
@@ -1411,13 +1434,12 @@ class WebAdminServer(BaseProtocol):
     # ------------------------------------------------------------------
 
     async def page_messages(self, request: web.Request) -> web.Response:
-        from datetime import timedelta
         tab = request.query.get("tab", "board")
         if tab not in ("board", "private"):
             tab = "board"
         msgs = await self.db.get_messages()
         days = self._cfg_get(("board", "retention_days")) or 14
-        now = datetime.utcnow()
+        now = now_utc()
 
         board_msgs = sorted((m for m in msgs if m.msg_type == "B"),
                             key=lambda m: (0 if m.sticky else 1, -m.id))
@@ -1502,9 +1524,10 @@ class WebAdminServer(BaseProtocol):
             table = (f"<table><tr><th>#</th><th>Status</th><th>Von → An</th><th>Betreff / Text</th>"
                      f"<th>Datum</th><th></th></tr>{''.join(rows)}</table>"
                      if rows else "<p>Keine privaten Nachrichten vorhanden.</p>")
+            max_personal = self._cfg_get(("messages", "max_personal")) or 30
             body = (tab_nav +
                     f"<p style='color:var(--dim)'>\U0001f512 Betreff/Text privater Nachrichten sind hier bewusst nicht "
-                    f"einsehbar (Datenschutz) – loeschen ist trotzdem moeglich. Postfach-Limit: 30 Nachrichten je "
+                    f"einsehbar (Datenschutz) – loeschen ist trotzdem moeglich. Postfach-Limit: {max_personal} Nachrichten je "
                     f"Empfaenger, weitere Sendeversuche werden abgelehnt statt aeltere automatisch zu loeschen.</p>"
                     f"{table}")
             count = len(private_msgs)
@@ -1588,8 +1611,7 @@ class WebAdminServer(BaseProtocol):
         (Flood/Direkt/Multihop), je Kategorie eine feste Farbe (siehe _ROUTE_COLORS).
         Legende immer sichtbar (>=2 Serien), Werte-Label nur am Tages-Maximum,
         Rest via Hover-Tooltip; 2px Surface-Gap zwischen gestapelten Segmenten."""
-        from datetime import timedelta
-        today = datetime.utcnow().date()
+        today = now_utc().date()
         day_list = [(today - timedelta(days=i)) for i in range(days - 1, -1, -1)]
         by_day: dict[str, dict[str, int]] = {}
         for r in rows:
@@ -1739,7 +1761,7 @@ class WebAdminServer(BaseProtocol):
 
     async def page_stats(self, request: web.Request) -> web.Response:
         try:
-            days = min(int(request.query.get("days", "14")), 90)
+            days = max(1, min(int(request.query.get("days", "14")), 90))
         except ValueError:
             days = 14
         daily = await self.db.get_daily_stats(days)
@@ -1747,7 +1769,7 @@ class WebAdminServer(BaseProtocol):
         user_routes = await self.db.get_user_route_stats(days, "rx")
         last_snr = await self.db.get_last_snr()
         snr_history = await self.db.get_snr_history(days)
-        msgs = await self.db.get_messages()
+        by_type = await self.db.count_messages_by_type()
 
         # Chart: empfangene Nachrichten pro Tag nach Routing-Art, fest ueber 30 Tage
         route_rows = await self.db.get_daily_route_stats(30, "rx")
@@ -1783,7 +1805,6 @@ class WebAdminServer(BaseProtocol):
                 entry["avg_snr"] = row["avg_snr"]
                 entry["min_snr"] = row["min_snr"]
                 entry["max_snr"] = row["max_snr"]
-        from urllib.parse import quote as _urlquote
         urows = []
         for call, d in sorted(by_user.items(), key=lambda kv: -kv[1].get("rx", 0)):
             ack, noack = d.get("ack", 0), d.get("noack", 0)
@@ -1809,7 +1830,7 @@ class WebAdminServer(BaseProtocol):
                 f"<span style='width:8px;height:8px;border-radius:2px;background:{self._ROUTE_COLORS[r]};"
                 f"display:inline-block'></span><span style='font-size:12.5px'>{route_mix[r]}</span></span>"
                 for r in self._ROUTE_ORDER if route_mix.get(r))
-            routing_cell = (f"<a href='/stats/user?call={_urlquote(call)}&days={days}' "
+            routing_cell = (f"<a href='/stats/user?call={quote(call)}&days={days}' "
                             f"style='display:inline-block'>{dots}</a>" if dots
                             else "<span style='color:var(--dim)'>-</span>")
             urows.append(f"<tr><td><b>{self._fmt_callsign(call)}</b></td><td>{d.get('rx', 0)}</td>"
@@ -1826,15 +1847,16 @@ class WebAdminServer(BaseProtocol):
                       f"{''.join(urows)}</table></div>"
                       if urows else "<p>Noch keine User-Ereignisse erfasst.</p>")
 
-        board = sum(1 for m in msgs if m.msg_type == "B")
-        priv = len(msgs) - board
+        board = by_type.get("B", 0)
+        priv = by_type.get("P", 0)
+        total_msgs = sum(by_type.values())
         body = f"""
         <p>Zeitraum:
           <a href="/stats?days=7">7 Tage</a> · <a href="/stats?days=14">14 Tage</a> ·
           <a href="/stats?days=30">30 Tage</a> · <a href="/stats?days=90">90 Tage</a>
           <span class="badge">aktuell: {days} Tage</span></p>
         <div class="cards">
-          <div class="card"><div class="k">Nachrichten gesamt</div><div class="v">{len(msgs)}</div></div>
+          <div class="card"><div class="k">Nachrichten gesamt</div><div class="v">{total_msgs}</div></div>
           <div class="card"><div class="k">Privat</div><div class="v">{priv}</div></div>
           <div class="card"><div class="k">Board</div><div class="v">{board}</div></div>
         </div>
@@ -1853,7 +1875,7 @@ class WebAdminServer(BaseProtocol):
     async def page_stats_user(self, request: web.Request) -> web.Response:
         call = str(request.query.get("call", "")).strip().upper()
         try:
-            days = min(int(request.query.get("days", "30")), 90)
+            days = max(1, min(int(request.query.get("days", "30")), 90))
         except ValueError:
             days = 30
         if not call:

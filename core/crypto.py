@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import os
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 KEY_LEN = 32   # AES-256
@@ -24,6 +25,11 @@ _SCRYPT_R = 8
 _SCRYPT_P = 1
 _SCRYPT_DKLEN = 32
 _SCRYPT_TAG = "scrypt"
+# Harte Speicherobergrenze fuer scrypt (unsere Parameter brauchen ~16 MB). Bei
+# verify_password werden n/r/p aus dem gespeicherten Hash gelesen; maxmem verhindert,
+# dass ein manipulierter Hash mit absurd hohen Parametern den Prozess per
+# Speicher-Allokation lahmlegt (scrypt wirft dann, verify faengt ab -> False).
+_SCRYPT_MAXMEM = 64 * 1024 * 1024   # 64 MiB
 
 
 def generate_key() -> str:
@@ -54,11 +60,15 @@ def decrypt(value: str, key: bytes) -> str:
     unveraendert zurueckgegeben."""
     if not is_encrypted(value):
         return value
-    raw = base64.b64decode(value[len(_PREFIX):])
-    nonce, ct = raw[:12], raw[12:]
     try:
+        raw = base64.b64decode(value[len(_PREFIX):])
+        nonce, ct = raw[:12], raw[12:]
         return AESGCM(key).decrypt(nonce, ct, None).decode("utf-8")
-    except Exception:
+    except (InvalidTag, ValueError):
+        # InvalidTag = falscher Schluessel/manipulierter Ciphertext; ValueError deckt
+        # defektes Base64 (binascii.Error) und ungueltiges UTF-8 (UnicodeDecodeError)
+        # ab. Andere Ausnahmen (MemoryError, KeyboardInterrupt, ...) bewusst NICHT
+        # verschlucken, damit echte Fehler nicht als "falscher Schluessel" getarnt werden.
         return "[Entschluesselung fehlgeschlagen – falscher Schluessel?]"
 
 
@@ -101,7 +111,8 @@ def hash_password(password: str) -> str:
     'scrypt$N$r$p$<salt_b64>$<hash_b64>'. Der Klartext wird nie gespeichert."""
     salt = os.urandom(16)
     dk = hashlib.scrypt(password.encode("utf-8"), salt=salt,
-                        n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=_SCRYPT_DKLEN)
+                        n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=_SCRYPT_DKLEN,
+                        maxmem=_SCRYPT_MAXMEM)
     return "${}${}${}${}${}${}".format(
         _SCRYPT_TAG, _SCRYPT_N, _SCRYPT_R, _SCRYPT_P,
         base64.b64encode(salt).decode("ascii"),
@@ -129,7 +140,8 @@ def verify_password(password: str, stored: str) -> bool:
             salt = base64.b64decode(salt_b64)
             expected = base64.b64decode(hash_b64)
             dk = hashlib.scrypt(password.encode("utf-8"), salt=salt,
-                                n=int(n), r=int(r), p=int(p), dklen=len(expected))
+                                n=int(n), r=int(r), p=int(p), dklen=len(expected),
+                                maxmem=_SCRYPT_MAXMEM)
             return hmac.compare_digest(dk, expected)
         except Exception:
             return False

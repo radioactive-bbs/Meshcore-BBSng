@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from core import crypto
 from core.message import Message
+from core.timeutil import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +248,62 @@ class Database:
         row = await cursor.fetchone()
         return row[0] if row else 0
 
+    async def count_messages(self) -> int:
+        """Gesamtzahl aller Nachrichten (fuer Dashboard/Statistik – zaehlt in SQL,
+        ohne alle Zeilen zu laden und private Inhalte zu entschluesseln)."""
+        cursor = await self._db.execute("SELECT COUNT(*) FROM messages")
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def count_messages_by_type(self) -> dict:
+        """Anzahl Nachrichten je msg_type ('P'/'B'), fuer die Statistik-Kacheln."""
+        cursor = await self._db.execute(
+            "SELECT msg_type, COUNT(*) AS n FROM messages GROUP BY msg_type")
+        return {r["msg_type"]: r["n"] for r in await cursor.fetchall()}
+
+    async def count_all_unread_personal(self) -> int:
+        """Ungelesene private Nachrichten ueber alle Postfaecher (Dashboard-Badge)."""
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) FROM messages WHERE msg_type = 'P' AND read = 0")
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    # --- Paginierte Listen (SQL-seitig gefiltert/begrenzt statt die ganze Tabelle
+    # zu laden und in Python zu filtern; spart Speicher und, bei 'P'-Nachrichten,
+    # das Entschluesseln nicht angezeigter Zeilen). COALESCE(sticky, 0), damit
+    # eventuelle NULL-sticky-Altzeilen wie nicht-sticky behandelt werden. --------
+
+    async def list_board_sticky(self) -> List[Message]:
+        """Alle angepinnten Board-Nachrichten (immer auf Seite 1), neueste zuerst."""
+        cursor = await self._db.execute(
+            "SELECT * FROM messages WHERE msg_type = 'B' AND COALESCE(sticky, 0) = 1 "
+            "ORDER BY id DESC")
+        return [self._row_to_message(r) for r in await cursor.fetchall()]
+
+    async def list_board_nonsticky(self, limit: int, offset: int = 0) -> List[Message]:
+        """Eine Seite nicht angepinnter Board-Nachrichten, neueste zuerst."""
+        cursor = await self._db.execute(
+            "SELECT * FROM messages WHERE msg_type = 'B' AND COALESCE(sticky, 0) = 0 "
+            "ORDER BY id DESC LIMIT ? OFFSET ?",
+            (limit, offset))
+        return [self._row_to_message(r) for r in await cursor.fetchall()]
+
+    async def count_board_nonsticky(self) -> int:
+        """Anzahl nicht angepinnter Board-Nachrichten (fuer die 'X gesamt'-Fussnote)."""
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) FROM messages WHERE msg_type = 'B' AND COALESCE(sticky, 0) = 0")
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def list_personal_page(self, callsign: str, limit: int, offset: int = 0) -> List[Message]:
+        """Eine Seite privater Nachrichten im Postfach von callsign, neueste zuerst.
+        Nur diese Seite wird geladen und (AES) entschluesselt, nicht das ganze Postfach."""
+        cursor = await self._db.execute(
+            "SELECT * FROM messages WHERE msg_type = 'P' AND to_call = ? "
+            "ORDER BY id DESC LIMIT ? OFFSET ?",
+            (callsign.upper(), limit, offset))
+        return [self._row_to_message(r) for r in await cursor.fetchall()]
+
     async def mark_read(self, msg_id: int):
         """Markiert als gelesen und zaehlt den Aufruf (views) – bei Board-Nachrichten
         liest i.d.R. mehr als ein User dieselbe Nachricht, daher Zaehler statt Flag."""
@@ -322,7 +379,7 @@ class Database:
     async def save_mc_contact(self, pubkey_hex: str, name: str):
         await self._db.execute(
             "INSERT INTO mc_contacts (pubkey, name, added_at) VALUES (?, ?, ?)",
-            (pubkey_hex.lower(), name.upper(), datetime.utcnow().isoformat()),
+            (pubkey_hex.lower(), name.upper(), now_utc().isoformat()),
         )
         await self._db.commit()
 
@@ -412,7 +469,7 @@ class Database:
         await self._db.execute(
             "UPDATE mc_contacts SET last_active = ?, inactivity_warned_days = '' "
             "WHERE name = ?",
-            (datetime.utcnow().isoformat(), name.upper()),
+            (now_utc().isoformat(), name.upper()),
         )
         await self._db.commit()
 
@@ -492,7 +549,7 @@ class Database:
             "INSERT OR REPLACE INTO pending_registrations "
             "(prefix_hex, pubkey, name, path, requested_at) VALUES (?, ?, ?, ?, ?)",
             (prefix_hex, pubkey_hex.lower(), name.upper(), path_hex,
-             datetime.utcnow().isoformat()),
+             now_utc().isoformat()),
         )
         await self._db.commit()
 
@@ -638,7 +695,7 @@ class Database:
         await self._db.execute(
             "INSERT OR REPLACE INTO blocked (pubkey, name, reason, blocked_at) "
             "VALUES (?, ?, ?, ?)",
-            (pubkey_hex.lower(), name.upper(), reason, datetime.utcnow().isoformat()),
+            (pubkey_hex.lower(), name.upper(), reason, now_utc().isoformat()),
         )
         await self._db.commit()
 

@@ -26,11 +26,16 @@ from cryptography.x509.oid import NameOID
 
 
 def _write_secret(path: str, data: bytes):
-    """Schreibt eine Datei mit 0600 (fuer den Private Key)."""
+    """Schreibt eine Datei mit 0600 (fuer den Private Key). os.open() erzwingt den
+    Modus nur bei NEU angelegten Dateien – existiert path bereits (z.B. manuell
+    kopierter Key, Backup-Restore mit anderer Umask), behaelt die Datei trotz
+    O_TRUNC ihre alten Rechte. Der explizite chmod() danach korrigiert das in
+    jedem Fall, unabhaengig davon ob die Datei neu oder bereits vorhanden war."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(data)
+    os.chmod(path, 0o600)
 
 
 def _local_ips() -> set:
@@ -95,10 +100,20 @@ def generate_self_signed(cert_path: str, key_path: str):
         f.write(cert.public_bytes(serialization.Encoding.PEM))
 
 
+# TLS-<=1.2-Cipher-Suites auf ECDHE/DHE (Forward Secrecy) + AEAD (GCM/ChaCha20)
+# beschraenken. Der OpenSSL-Default enthaelt sonst u.a. PSK-/SRP-Suiten (fuer dieses
+# Web-Admin-Panel sinnlose Angriffsflaeche, es ist keine PSK-Identity konfiguriert)
+# sowie aeltere Suiten ohne Forward Secrecy. Betrifft nur TLS <=1.2; TLS-1.3-Suiten
+# sind davon unabhaengig (immer stark) und bleiben unveraendert nutzbar.
+_HARDENED_CIPHERS = ("ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:"
+                     "!aNULL:!eNULL:!MD5:!3DES:!RC4:!PSK:!SRP:!DSS")
+
+
 def load_context(cert_path: str, key_path: str) -> ssl.SSLContext:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     # Veraltete Protokolle (TLS 1.0/1.1) ausschliessen – unabhaengig von der OpenSSL-Policy.
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.set_ciphers(_HARDENED_CIPHERS)
     ctx.load_cert_chain(cert_path, key_path)
     return ctx
 
