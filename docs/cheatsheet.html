@@ -234,6 +234,10 @@
   <p>Zum Ausdrucken im Kreditkartenformat (85,6 × 54 mm) und Laminieren. Vorder-
   und Rückseite unten, Druckdialog stellt jede Seite automatisch passend
   formatiert (<code>Drucken → Tatsächliche Größe</code>).</p>
+  <p>Aus Platzgründen zeigt die Karte nur die Kürzel. Jedes hat zusätzlich eine
+  deutsche Langform (z. B. <code>SENDEN</code>, <code>LOESCHEN</code>,
+  <code>NACHRICHTENLISTE</code>) — beide funktionieren immer gleichwertig,
+  vollständige Liste in der <a href="../README.md">README</a>.</p>
 </div>
 
 <button class="print-btn" onclick="window.print()">Drucken / als PDF speichern</button>
@@ -270,12 +274,13 @@
           <div class="row"><span class="cmd">S TO|Betr|Text</span><span class="desc">privat senden</span></div>
           <div class="row"><span class="cmd">RS&lt;nr&gt;|Text</span><span class="desc">Antwort (auto TO/Betreff)</span></div>
           <div class="row"><span class="cmd">SB Thema|Text</span><span class="desc">Bulletin posten</span></div>
+          <div class="row"><span class="cmd">SBR&lt;nr&gt;|Text</span><span class="desc">Antwort auf Bulletin</span></div>
         </div>
         <div class="grp">
           <h4>Board &amp; Löschen</h4>
           <div class="row"><span class="cmd">BL</span><span class="desc">Board-Liste</span></div>
           <div class="row"><span class="cmd">BLO&lt;n&gt;</span><span class="desc">weitere ab n</span></div>
-          <div class="row"><span class="cmd">ND&lt;nr&gt; / K&lt;nr&gt;</span><span class="desc">löschen (eigene)</span></div>
+          <div class="row"><span class="cmd">ND&lt;nr&gt; / K&lt;nr&gt;</span><span class="desc">löschen (eigene, Rückfrage)</span></div>
         </div>
       </div>
     </div>
@@ -312,7 +317,7 @@
           <h4>Account</h4>
           <div class="row"><span class="cmd">MI</span><span class="desc">eigene Account-Info</span></div>
           <div class="row"><span class="cmd">MC &lt;mail&gt;</span><span class="desc">Mailkontakt setzen</span></div>
-          <div class="row"><span class="cmd">REMOVE</span><span class="desc">abmelden (nur DM)</span></div>
+          <div class="row"><span class="cmd">REMOVE</span><span class="desc">abmelden (nur DM, Rückfrage)</span></div>
         </div>
         <div class="grp">
           <h4>Pubkey &amp; Sicherheit</h4>
