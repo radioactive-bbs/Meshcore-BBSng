@@ -113,14 +113,16 @@ class BBSCore:
             "\U0001f4cb NL Liste  \U0001f4d6 R<n> Lesen",
             "✉ S TO|Betr|Text",
             "\U0001f5d1 ND<n> Loeschen (nur eigene erhaltene)  \U0001f4e1 H Main",
+            "Auch: NACHRICHTENLISTE, LESEN, SENDEN, LOESCHEN",
         ])]
 
     async def menu_board(self) -> list[str]:
         return ["\n".join([
             "\U0001f4cb Board",
             "\U0001f4cb BL Liste  \U0001f4d6 R<n> Lesen",
-            "\U0001f4dd SB Thema|Text",
+            "\U0001f4dd SB Thema|Text  SBR<n>|Text Antwort",
             "\U0001f5d1 ND<n> Loeschen (nur eigene Bulletins)  \U0001f4e1 H  BBS-Main",
+            "Auch: BOARDLISTE, BULLETIN, BULLETINANTWORT, LOESCHEN",
         ])]
 
     async def menu_weather(self) -> list[str]:
@@ -130,6 +132,7 @@ class BBSCore:
             "\U0001f324 WX1  Morgen",
             "\U0001f4c5 WX3  3 Tage",
             "\U0001f4e1 H    BBS-Main",
+            "Auch: WETTER, MORGEN, DREITAGE",
         ])]
 
     async def menu_info(self) -> list[str]:
@@ -145,6 +148,7 @@ class BBSCore:
             lines.append("\U0001f4e1 PING <Name>  Node-Ping")
         lines.append("\U0001f511 PK <Name>  voller Pubkey (PK = eigener)")
         lines.append("\U0001f4e1 H  BBS-Main")
+        lines.append("Auch: SYSINFO, ONLINE, USERLISTE, PUBKEY")
         return ["\n".join(lines)]
 
     async def menu_account(self) -> list[str]:
@@ -154,6 +158,7 @@ class BBSCore:
             "\U0001f4e7 MC  Mailkontakt",
             "\U0001f6aa REMOVE  Abmelden",
             "\U0001f4e1 H  BBS-Main",
+            "Auch: MEINEINFO, MAIL",
         ])]
 
     # ------------------------------------------------------------------
@@ -177,7 +182,7 @@ class BBSCore:
         L zeigte vorher Board+privat gemischt und ungefiltert fuer jeden Absender an
         (>CALLSIGN liess sogar fremde Postfach-Betreffs mitlesen - bewusst nicht
         uebernommen)."""
-        return ["BL = Board Liste, NL = Nachrichten Liste"]
+        return ["BL/BOARDLISTE = Board Liste, NL/NACHRICHTENLISTE = Nachrichten Liste"]
 
     async def cmd_list_board(self, offset: Optional[int] = None) -> list[str]:
         # SQL-seitig gefiltert/paginiert statt die ganze Tabelle zu laden: Board-
@@ -212,9 +217,9 @@ class BBSCore:
             subject = m.subject if len(m.subject) <= 15 else m.subject[:15] + "..."
             lines.append(f"{m.id:>3} {pin:<6} {date:<8} {m.from_call:<9} {subject}")
         if offset is None and total_other > self.FIRST_PAGE:
-            lines.append(f"BLO {self.FIRST_PAGE + 1} fuer weitere ({total_other} gesamt)")
+            lines.append(f"BL {self.FIRST_PAGE + 1} fuer weitere ({total_other} gesamt)")
         elif offset is not None and total_other > start + self.PAGE_SIZE:
-            lines.append(f"BLO {offset + self.PAGE_SIZE} fuer weitere ({total_other} gesamt)")
+            lines.append(f"BL {offset + self.PAGE_SIZE} fuer weitere ({total_other} gesamt)")
         return lines
 
     async def cmd_list_personal(self, callsign: str, offset: Optional[int] = None) -> list[str]:
@@ -237,11 +242,12 @@ class BBSCore:
         for m in page:
             mark = "*" if not m.read else " "
             date = m.created_at.strftime("%d.%m.%y")
-            lines.append(f"{m.id:>3}{mark} {m.from_call:<9} {date:<8} {m.subject[:15]}")
+            subject = m.subject if len(m.subject) <= 15 else m.subject[:15] + "..."
+            lines.append(f"{m.id:>3}{mark} {m.from_call:<9} {date:<8} {subject}")
         if offset is None and total > self.FIRST_PAGE:
-            lines.append(f"NLO {self.FIRST_PAGE + 1} fuer weitere ({total} gesamt)")
+            lines.append(f"NL {self.FIRST_PAGE + 1} fuer weitere ({total} gesamt)")
         elif offset is not None and total > start + self.PAGE_SIZE:
-            lines.append(f"NLO {offset + self.PAGE_SIZE} fuer weitere ({total} gesamt)")
+            lines.append(f"NL {offset + self.PAGE_SIZE} fuer weitere ({total} gesamt)")
         return lines
 
     async def cmd_read(self, callsign: str, msg_id: int) -> list[str]:
@@ -274,6 +280,12 @@ class BBSCore:
         if count >= self.max_personal_messages:
             return [f"Postfach von {to_call} ist voll ({count}/{self.max_personal_messages}). "
                     f"Nicht gesendet."]
+        # Registrierung VOR dem Speichern pruefen: ohne diese Pruefung sah die
+        # Bestaetigung bei jedem Tippfehler im Rufzeichen (oder wenn der Empfaenger
+        # sich zwischenzeitlich entfernt hat) exakt gleich aus wie bei echter
+        # Zustellung - der Absender hatte keine Moeglichkeit zu erkennen, dass die
+        # Nachricht nie irgendjemand lesen wird.
+        is_registered = await self.db.find_mc_contact_by_name(to_call) is not None
         msg = Message(
             id=None,
             msg_type="P",
@@ -284,6 +296,9 @@ class BBSCore:
             created_at=now_utc(),
         )
         msg_id = await self.db.save_message(msg)
+        if not is_registered:
+            return [f"Msg #{msg_id} gespeichert. ACHTUNG: {to_call} ist nicht registriert - "
+                    f"die Nachricht wird erst sichtbar, falls sich {to_call} spaeter anmeldet."]
         # Inhalt direkt per Push-DM zustellen statt nur eines Hinweises -- der
         # Empfaenger muss nicht extra NL/R<id> senden, um zu lesen. Bleibt bis zum
         # expliziten R<id> als "ungelesen" markiert (Badge/Loesch-Erinnerung
@@ -294,7 +309,7 @@ class BBSCore:
             f"Betreff: {subject}\n"
             f"---\n"
             f"{body}")
-        return [f"Msg #{msg_id} an {to_call} gespeichert. 73!"]
+        return [f"Msg #{msg_id} an {to_call} gespeichert, Zustellung per DM angestossen. 73!"]
 
     async def cmd_reply(self, callsign: str, msg_id: int, body: str) -> list[str]:
         """Antwortet auf eine empfangene private Nachricht, ohne Empfaenger/Betreff
@@ -323,6 +338,17 @@ class BBSCore:
         msg_id = await self.db.save_message(msg)
         return [f"Bulletin #{msg_id} gespeichert. 73!"]
 
+    async def cmd_bulletin_reply(self, from_call: str, msg_id: int, body: str) -> list[str]:
+        """Antwortet auf ein Board-Bulletin als neues Bulletin (Thema mit 'Re: '-
+        Praefix, nicht doppelt falls schon vorhanden) - Pendant zu cmd_reply fuer
+        Board-Nachrichten. Board-Bulletins sind oeffentlich (per BL sichtbar),
+        daher keine Maskierung wie bei privaten Nachrichten noetig."""
+        msg = await self.db.get_message(msg_id)
+        if not msg or msg.msg_type != "B":
+            return [f"Bulletin #{msg_id} nicht gefunden."]
+        topic = msg.subject if msg.subject.upper().startswith("RE:") else f"Re: {msg.subject}"
+        return await self.cmd_bulletin(from_call, topic, body)
+
     def _is_sysop(self, callsign: str) -> bool:
         """True, wenn callsign der primaere SysOp oder einer der konfigurierten
         Co-SysOps ist (config.sysop / config.co_sysops, live aus der Config -
@@ -333,10 +359,16 @@ class BBSCore:
         co_sysops = self.config.get("co_sysops") or []
         return caller in {str(c).upper() for c in co_sysops}
 
-    async def cmd_kill(self, callsign: str, msg_id: int) -> list[str]:
+    async def can_kill(self, callsign: str, msg_id: int) -> tuple[bool, list[str]]:
+        """Prueft, ob callsign Nachricht msg_id loeschen darf, OHNE zu loeschen.
+        Rueckgabe: (True, []) wenn erlaubt, sonst (False, <Fehlerzeilen>) -- exakt
+        dieselbe Maskierung wie bisher in cmd_kill (private Nachricht fuer Dritte =
+        "nicht gefunden", damit keine Enumeration moeglich ist). Getrennt von
+        cmd_kill, damit der MeshCore-Server vor einer Loesch-Rueckfrage pruefen kann,
+        ob ueberhaupt etwas Echtes geloescht wuerde, ohne die Maskierung zu umgehen."""
         msg = await self.db.get_message(msg_id)
         if not msg:
-            return [f"Nachricht #{msg_id} nicht gefunden."]
+            return False, [f"Nachricht #{msg_id} nicht gefunden."]
         caller = callsign.upper()
         is_sysop = self._is_sysop(caller)
         if msg.msg_type == "P":
@@ -346,14 +378,20 @@ class BBSCore:
             # existieren (Enumerierung). Loeschen darf danach nur der Empfaenger (sein
             # Postfach); der Absender darf die Nachricht zwar lesen, aber nicht loeschen.
             if caller not in (msg.to_call.upper(), msg.from_call.upper()) and not is_sysop:
-                return [f"Nachricht #{msg_id} nicht gefunden."]
+                return False, [f"Nachricht #{msg_id} nicht gefunden."]
             if caller != msg.to_call.upper() and not is_sysop:
-                return ["Keine Berechtigung."]
+                return False, ["Keine Berechtigung."]
         else:
             # Board-Bulletin: Existenz ist oeffentlich (per BL sichtbar), daher kein
             # Masking noetig. Loeschen darf nur der Autor oder ein SysOp.
             if caller != msg.from_call.upper() and not is_sysop:
-                return ["Keine Berechtigung."]
+                return False, ["Keine Berechtigung."]
+        return True, []
+
+    async def cmd_kill(self, callsign: str, msg_id: int) -> list[str]:
+        ok, err = await self.can_kill(callsign, msg_id)
+        if not ok:
+            return err
         await self.db.delete_message(msg_id)
         return [f"Nachricht #{msg_id} geloescht."]
 
@@ -383,21 +421,24 @@ class BBSCore:
                 self.config.get("qth", "QTH"), ha.get("verify_ssl", True))
 
     async def cmd_weather(self) -> list[str]:
+        # "Home Assistant" ist ein internes Implementierungsdetail (Backend fuer die
+        # Wetterdaten) -- fuer einen regulaeren Mesh-User ohne Bedeutung, daher in
+        # den nutzersichtbaren Texten generisch "Wetterdienst" statt "Home Assistant".
         url, token, qth, verify = self._ha_settings()
         if not url or not token:
-            return ["WX: Home Assistant nicht konfiguriert"]
+            return ["WX: Wetterdienst nicht konfiguriert"]
         return await fetch_weather(url, token, qth, verify_ssl=verify)
 
     async def cmd_forecast_1day(self) -> list[str]:
         url, token, qth, verify = self._ha_settings()
         if not url or not token:
-            return ["WX1: Home Assistant nicht konfiguriert"]
+            return ["WX1: Wetterdienst nicht konfiguriert"]
         return await fetch_forecast_1day(url, token, qth, verify_ssl=verify)
 
     async def cmd_forecast_3days(self) -> list[str]:
         url, token, qth, verify = self._ha_settings()
         if not url or not token:
-            return ["WX3: Home Assistant nicht konfiguriert"]
+            return ["WX3: Wetterdienst nicht konfiguriert"]
         return await fetch_forecast_3days(url, token, qth, verify_ssl=verify)
 
     async def cmd_my_info(self, callsign: str) -> list[str]:

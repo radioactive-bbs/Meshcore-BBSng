@@ -71,8 +71,13 @@ logger = logging.getLogger(__name__)
 NODE_TIMEOUT    = 600   # Sekunden bis Node als "offline" gilt
 # Befehle mit Zahlenargument, die zusaetzlich zur "X 5"-Form auch attached "X5"
 # akzeptieren (siehe Normalisierung in _dispatch_bbs) -- WX1/WX3 duerfen hier NICHT
-# rein, sonst wuerde "WX1" faelschlich zu WX + Argument 1 zerlegt.
-_NUMERIC_ARG_CMDS = {"R", "K", "ND", "BLO", "NLO"}
+# rein, sonst wuerde "WX1" faelschlich zu WX + Argument 1 zerlegt. BL/NL nehmen
+# seit der Zusammenlegung mit BLO/NLO ebenfalls ein optionales Zahlenargument
+# entgegen (BLO/NLO bleiben als funktionierende Alt-Formen erhalten). Die
+# deutschsprachigen Langform-Aliase (LESEN, LOESCHEN, BOARDLISTE,
+# NACHRICHTENLISTE, ...) bekommen bewusst KEINE Attached-Digit-Bequemlichkeit --
+# "LESEN5" waere unhandlich, wer die Langform braucht tippt ohnehin mit Leerzeichen.
+_NUMERIC_ARG_CMDS = {"R", "K", "ND", "BLO", "NLO", "BL", "NL"}
 _USER_RE = USERNAME_RE  # siehe core/validation.py
 MAX_MSG_LEN     = 150   # Firmware-Limit: max 150 Zeichen pro Paket
 CONFIRM_TIMEOUT = 30.0  # Fallback-Sekunden, falls Node kein est_timeout liefert
@@ -97,6 +102,16 @@ SENT_WAIT       = 5.0   # Sekunden auf RESP_CODE_SENT nach einem DM-Send
 # bevor S/SB freigeschaltet wird (siehe _pubkey_ack_gate / _confirm_pubkey_ack).
 PUBKEY_ACK_TIMEOUT = 900   # Sekunden, die ein Bestaetigungscode gueltig ist (15 Min)
 _PUBKEY_ACK_RE = re.compile(r'^OK\s*(\d{6})$', re.IGNORECASE)
+
+# Destruktive Befehle (REMOVE, K/ND) erfordern eine Bestaetigung durch erneutes
+# Senden desselben Befehls innerhalb des jeweiligen Zeitfensters -- verhindert
+# versehentliches, unwiderrufliches Loeschen durch Tippfehler/verfruehtes Absenden.
+REMOVE_CONFIRM_WINDOW = 120.0   # Sekunden, in denen ein erneutes REMOVE bestaetigt
+KILL_CONFIRM_WINDOW   = 60.0    # Sekunden, in denen ein erneutes K<n>/ND<n> bestaetigt
+
+REPEATER_LIST_LIMIT = 15   # PING ohne Argument: max. angezeigte Repeater auf einmal
+                           # (verhindert einen unbegrenzten Chunk-Schwall bei vielen
+                           # bekannten Repeatern)
 
 
 @dataclass
@@ -215,6 +230,18 @@ class MeshCoreServer(BaseProtocol):
         # pubkey_prefix (6B hex) -> {"code", "sent_at"} fuer ausstehende Pubkey-
         # Sicherheitshinweis-Bestaetigungen (siehe _pubkey_ack_gate / _confirm_pubkey_ack)
         self._pending_pubkey_ack: dict[str, dict] = {}
+        # pubkey_prefix (6B hex) -> urspruenglicher S/SB/RS/SBR-Text, der durch den
+        # Pubkey-Hinweis blockiert wurde -- wird nach erfolgreicher OK-Bestaetigung
+        # automatisch nachgeholt (siehe _confirm_pubkey_ack), damit der User seine
+        # Nachricht nicht erneut eintippen muss.
+        self._pending_send_replay: dict[str, str] = {}
+
+        # pubkey_prefix (6B hex) -> Zeitpunkt der ersten REMOVE-Anfrage, wartet auf
+        # Bestaetigung durch ein zweites REMOVE innerhalb REMOVE_CONFIRM_WINDOW
+        self._pending_remove_confirm: dict[str, float] = {}
+        # pubkey_prefix (6B hex) -> (msg_id, Zeitpunkt) der ersten K/ND-Anfrage,
+        # wartet auf Bestaetigung durch denselben Befehl innerhalb KILL_CONFIRM_WINDOW
+        self._pending_kill_confirm: dict[str, tuple[int, float]] = {}
 
         self._self_pubkey: Optional[bytes] = None
         self._serial: Optional[aioserial.AioSerial] = None
@@ -496,7 +523,8 @@ class MeshCoreServer(BaseProtocol):
         bbs_call = self.config.get("callsign", "SysOp")
         await self._reply(bytes.fromhex(prefix_hex),
                            f"Freigeschaltet! Hallo {pending['name']}, dein Account ist jetzt "
-                           f"aktiv. H = Hilfe & Befehlsuebersicht. 73 de {bbs_call}")
+                           f"aktiv. H = Hilfe. Hinweis: vor dem ersten S/SB ist einmalig "
+                           f"eine kurze Pubkey-Bestaetigung per Code noetig. 73 de {bbs_call}")
         logger.info("Web-Admin: Registrierung von %s freigeschaltet (pubkey %s...)",
                     pending["name"], pending["pubkey"][:12])
         return True
@@ -1100,7 +1128,7 @@ class MeshCoreServer(BaseProtocol):
         # remove nur per Direct Message erlaubt (Pubkey-Prefix Verifikation)
         cmd0 = msg.text.strip().split(None, 1)[0].upper() if msg.text.strip() else ""
         if cmd0 == "REMOVE":
-            await self._direct_remove(msg.pubkey_prefix, prefix_hex, callsign)
+            await self._handle_remove_request(msg.pubkey_prefix, prefix_hex, callsign)
             return
 
         response_lines = await self._dispatch_bbs(callsign, msg.text.strip(), prefix_hex)
@@ -1115,36 +1143,66 @@ class MeshCoreServer(BaseProtocol):
 
     async def _dispatch_bbs(self, callsign: str, text: str, prefix_hex: str = "") -> list[str]:
         """
-        Flacher Dispatcher – jeder Shortcut eindeutig, von überall nutzbar.
+        Flacher Dispatcher – jeder Shortcut eindeutig, von überall nutzbar. Jeder
+        Kurzbefehl hat zusaetzlich eine deutschsprachige Langform als Alias (fuer
+        User, die sich mit den Kuerzeln schwertun) -- beide Formen funktionieren
+        immer gleichwertig nebeneinander, siehe Tabelle unten.
 
         Navigation (zeigt Submenu):
-          H/?  BBS-Main   N  Nachrichten  B  Board
-          W    Wetter      I  Info         A  Account
+          H/?/HELP  BBS-Main   N/NACHRICHTEN  Nachrichten   B/BOARD  Board
+          W  Wetter (WETTER liefert die Daten direkt, ohne Menue)
+          I/INFO  Info          A/ACCOUNT  Account
 
         Befehle:
-          WX   Wetter      SI Sysinfo      O  Online
-          BL   Board-Liste  BLO<n> weitere  NL Nachrichten-Liste  NLO<n> weitere
-          R<n> Lesen        S TO|Betr|Text  SB Thema|Text
-          RS<n>|Text  Antwort auf empfangene private Nachricht <n> (Empfaenger/Betreff automatisch)
-          K<n>/ND<n> Loeschen (nur eigene: erhaltene Nachrichten bzw. eigene Bulletins)
-          MI   Meine Info  MC mail         REMOVE Abmelden
-          PK   eigener Pubkey (voll)   PK <Name>  voller Pubkey eines Kontakts
+          WX/WETTER  Wetter      WX1/MORGEN  morgen      WX3/DREITAGE  3 Tage
+          SI/SYSINFO  Sysinfo    O/ONLINE  Online        LU/USERLISTE  Userliste
+          PK/PUBKEY  eigener Pubkey (voll)   PK/PUBKEY <Name>  Pubkey eines Kontakts
+          BL/BLO/BOARDLISTE [<n>]  Board-Liste (mit optionalem Offset fuer Folgeseiten)
+          NL/NLO/NACHRICHTENLISTE [<n>]  Nachrichten-Liste (dito)
+          R<n>/LESEN <n>  Lesen
+          S/SP/SENDEN CALL|Betr|Text     SB/BULLETIN Thema|Text
+          RS<n>|Text / ANTWORT<n>|Text  Antwort auf empfangene private Nachricht <n>
+                     (Empfaenger/Betreff automatisch)
+          SBR<n>|Text / BULLETINANTWORT<n>|Text  Antwort auf Board-Bulletin <n>
+                     (als neues Bulletin)
+          K<n>/ND<n>/LOESCHEN <n>  Loeschen (nur eigene: erhaltene Nachrichten bzw.
+                     eigene Bulletins, erfordert Bestaetigung durch erneutes Senden)
+          MI/MEINEINFO  Meine Info   MC/MAIL mail   REMOVE Abmelden
         """
-        # RS<n>|Text: Nummer und Pipe-Text haengen direkt aneinander (wie K<n>/ND<n>),
-        # der restliche Text nach dem Pipe darf aber Leerzeichen enthalten -- der
-        # generische Leerzeichen-Split unten wuerde das falsch zerlegen, daher hier
-        # per eigenem Regex VOR dem generischen Parsing behandelt.
-        m_reply = re.match(r'^RS(\d+)\|(.*)$', text.strip(), re.IGNORECASE | re.DOTALL)
+        # RS<n>|Text / ANTWORT<n>|Text: Nummer und Pipe-Text haengen direkt
+        # aneinander (wie K<n>/ND<n>), der restliche Text nach dem Pipe darf aber
+        # Leerzeichen enthalten -- der generische Leerzeichen-Split unten wuerde
+        # das falsch zerlegen, daher hier per eigenem Regex VOR dem generischen
+        # Parsing behandelt. ANTWORT ist die deutschsprachige Langform von RS.
+        m_reply = re.match(r'^(?:RS|ANTWORT)(\d+)\|(.*)$', text.strip(), re.IGNORECASE | re.DOTALL)
         if m_reply:
             if not self.bbs.feature_enabled("messages"):
                 return [f"Unbekannt: RS  H=Hilfe"]
             gate = await self._pubkey_ack_gate(prefix_hex, callsign)
             if gate:
+                self._pending_send_replay[prefix_hex] = text
                 return gate
             body = m_reply.group(2).strip()
             if not body:
-                return ["Format: RS<Nummer>|Text"]
+                return ["Format: ANTWORT<Nummer>|Text (oder RS<Nummer>|Text)"]
             return await self.bbs.cmd_reply(callsign, int(m_reply.group(1)), body)
+
+        # SBR<n>|Text / BULLETINANTWORT<n>|Text: Antwort auf ein Board-Bulletin als
+        # neues Bulletin (Thema mit "Re: "-Praefix) -- Pendant zu RS/ANTWORT fuer
+        # Board-Nachrichten. BULLETINANTWORT ist die deutschsprachige Langform.
+        m_bulletin_reply = re.match(r'^(?:SBR|BULLETINANTWORT)(\d+)\|(.*)$',
+                                    text.strip(), re.IGNORECASE | re.DOTALL)
+        if m_bulletin_reply:
+            if not self.bbs.feature_enabled("board"):
+                return [f"Unbekannt: SBR  H=Hilfe"]
+            gate = await self._pubkey_ack_gate(prefix_hex, callsign)
+            if gate:
+                self._pending_send_replay[prefix_hex] = text
+                return gate
+            body = m_bulletin_reply.group(2).strip()
+            if not body:
+                return ["Format: BULLETINANTWORT<Nummer>|Text (oder SBR<Nummer>|Text)"]
+            return await self.bbs.cmd_bulletin_reply(callsign, int(m_bulletin_reply.group(1)), body)
 
         parts = text.strip().split(None, 1)
         if not parts:
@@ -1176,12 +1234,12 @@ class MeshCoreServer(BaseProtocol):
         if cmd in ("H", "?", "HELP"):
             set_state("main")
             return await self.bbs.menu_main(callsign)
-        if cmd == "N":
+        if cmd in ("N", "NACHRICHTEN"):
             if not feat("messages"):
                 return unknown
             set_state("msg")
             return await self.bbs.menu_messages(callsign)
-        if cmd == "B":
+        if cmd in ("B", "BOARD"):
             if not feat("board"):
                 return unknown
             set_state("board")
@@ -1191,10 +1249,10 @@ class MeshCoreServer(BaseProtocol):
                 return unknown
             set_state("wx")
             return await self.bbs.menu_weather()
-        if cmd == "I":
+        if cmd in ("I", "INFO"):
             set_state("info")
             return await self.bbs.menu_info()
-        if cmd == "A":
+        if cmd in ("A", "ACCOUNT"):
             if not feat("account"):
                 return unknown
             set_state("account")
@@ -1203,79 +1261,87 @@ class MeshCoreServer(BaseProtocol):
         # Befehle
         if cmd in ("WX", "WETTER"):
             return await self.bbs.cmd_weather() if feat("weather") else unknown
-        if cmd == "WX1":
+        if cmd in ("WX1", "MORGEN"):
             return await self.bbs.cmd_forecast_1day() if feat("weather") else unknown
-        if cmd == "WX3":
+        if cmd in ("WX3", "DREITAGE"):
             return await self.bbs.cmd_forecast_3days() if feat("weather") else unknown
-        if cmd == "SI":
+        if cmd in ("SI", "SYSINFO"):
             return await self.bbs.cmd_info(len(active)) if feat("sysinfo") else unknown
-        if cmd == "O":
+        if cmd in ("O", "ONLINE"):
             return await self.bbs.cmd_who(active) if feat("online") else unknown
-        if cmd == "LU":
+        if cmd in ("LU", "USERLISTE"):
             return await self.bbs.cmd_list_users() if feat("userlist") else unknown
         if cmd == "PING":
             return await self._cmd_ping(arg, prefix_hex) if feat("ping") else unknown
-        if cmd == "PK":
+        if cmd in ("PK", "PUBKEY"):
             return await self._cmd_pubkey(arg, prefix_hex)
-        if cmd == "MI":
+        if cmd in ("MI", "MEINEINFO"):
             return await self.bbs.cmd_my_info(callsign) if feat("account") else unknown
-        if cmd == "MC":
+        if cmd in ("MC", "MAIL"):
             if not feat("account"):
                 return unknown
             if not arg:
-                return ["Format: MC deine@mail.de"]
+                return ["Format: MAIL deine@mail.de (oder MC deine@mail.de)"]
             return await self.bbs.cmd_set_mail(callsign, arg)
         if cmd == "L":
             return await self.bbs.cmd_list() if msgs_or_board else unknown
-        if cmd == "BL":
-            return await self.bbs.cmd_list_board() if feat("board") else unknown
-        if cmd == "BLO":
+        if cmd in ("BL", "BLO", "BOARDLISTE"):
+            # BL/BLO/BOARDLISTE sind zusammengefuehrt: ohne Argument erste Seite,
+            # mit Zahlenargument die entsprechende Folgeseite -- BLO existierte
+            # frueher als eigenes Wort nur fuer den Offset-Fall, ist jetzt nur noch
+            # eine funktionierende Alt-Form desselben Befehls.
             if not feat("board"):
                 return unknown
+            if not arg:
+                return await self.bbs.cmd_list_board()
             if not arg.isdigit():
-                return ["Format: BLO <Zahl>"]
+                return ["Format: BOARDLISTE <Zahl> (oder BL <Zahl> / BLO <Zahl>)"]
             return await self.bbs.cmd_list_board(int(arg))
-        if cmd == "NL":
-            return await self.bbs.cmd_list_personal(callsign) if feat("messages") else unknown
-        if cmd == "NLO":
+        if cmd in ("NL", "NLO", "NACHRICHTENLISTE"):
             if not feat("messages"):
                 return unknown
+            if not arg:
+                return await self.bbs.cmd_list_personal(callsign)
             if not arg.isdigit():
-                return ["Format: NLO <Zahl>"]
+                return ["Format: NACHRICHTENLISTE <Zahl> (oder NL <Zahl> / NLO <Zahl>)"]
             return await self.bbs.cmd_list_personal(callsign, int(arg))
-        if cmd == "R":
+        if cmd in ("R", "LESEN"):
             if not msgs_or_board:
                 return unknown
             if not arg.isdigit():
-                return ["Format: R <Nummer>"]
+                return ["Format: LESEN <Nummer> (oder R <Nummer>)"]
             return await self.bbs.cmd_read(callsign, int(arg))
-        if cmd in ("S", "SP"):
+        if cmd in ("S", "SP", "SENDEN"):
             if not feat("messages"):
                 return unknown
             gate = await self._pubkey_ack_gate(prefix_hex, callsign)
             if gate:
+                self._pending_send_replay[prefix_hex] = text
                 return gate
             p = arg.split("|", 2)
             if len(p) < 3:
-                return ["Format: S CALL|Betr|Text"]
+                return ["Format: SENDEN CALL|Betr|Text (oder S CALL|Betr|Text; "
+                        "Betreff darf kein '|' enthalten)"]
             return await self.bbs.cmd_send(callsign, p[0].strip(), p[1].strip(), p[2].strip())
-        if cmd == "SB":
+        if cmd in ("SB", "BULLETIN"):
             if not feat("board"):
                 return unknown
             gate = await self._pubkey_ack_gate(prefix_hex, callsign)
             if gate:
+                self._pending_send_replay[prefix_hex] = text
                 return gate
             p = arg.split("|", 1)
             if len(p) < 2:
-                return ["Format: SB Thema|Text"]
+                return ["Format: BULLETIN Thema|Text (oder SB Thema|Text; "
+                        "Thema darf kein '|' enthalten)"]
             return await self.bbs.cmd_bulletin(callsign, p[0].strip(), p[1].strip())
-        if cmd in ("K", "ND"):
+        if cmd in ("K", "ND", "LOESCHEN"):
             if not msgs_or_board:
                 return unknown
             if not arg.isdigit():
-                return [f"Format: {cmd} <Nummer> (nur eigene Nachrichten: als Empfaenger "
-                        f"erhaltene Nachrichten bzw. eigene Bulletins)"]
-            return await self.bbs.cmd_kill(callsign, int(arg))
+                return ["Format: LOESCHEN <Nummer> (oder K/ND <Nummer>) - nur eigene "
+                        "Nachrichten: als Empfaenger erhaltene Nachrichten bzw. eigene Bulletins"]
+            return await self._handle_kill_request(prefix_hex, callsign, int(arg), cmd)
 
         return unknown
 
@@ -1357,19 +1423,25 @@ class MeshCoreServer(BaseProtocol):
         await self._reply(bytes.fromhex(requester_prefix_hex), result)
 
     async def _list_repeaters(self, requester_prefix_hex: str):
-        """Listet alle dem Node bekannten Repeater (ADV_TYPE_REPEATER) – ueber mehrere
-        DMs, ohne das normale 5-Chunk-Limit (per PING ohne Argument)."""
+        """Listet dem Node bekannte Repeater (ADV_TYPE_REPEATER), begrenzt auf
+        REPEATER_LIST_LIMIT (per PING ohne Argument) -- verhindert einen unbegrenzten
+        Chunk-Schwall bei vielen bekannten Repeatern (z.B. hunderte Kontakte im
+        Livebetrieb). Bei mehr Repeatern als angezeigt: Hinweis auf PING <Teilname>
+        zum Eingrenzen (nutzt die bereits vorhandene Substring-Suche in _cmd_ping)."""
         reps = sorted((c for c in self._contacts.values() if c.type == ADV_TYPE_REPEATER),
                       key=lambda c: c.name.lower())
         requester = bytes.fromhex(requester_prefix_hex)
         if not reps:
             await self._reply(requester, "Keine Repeater bekannt")
             return
-        lines = [f"Repeater ({len(reps)}):"] + [c.name for c in reps]
-        chunks = _chunk(lines, self.max_len)
+        shown = reps[:REPEATER_LIST_LIMIT]
+        lines = [f"Repeater ({len(shown)} von {len(reps)}):"] + [c.name for c in shown]
+        if len(reps) > REPEATER_LIST_LIMIT:
+            lines.append("Tipp: PING <Teil des Namens> zum gezielten Suchen/Anpingen.")
+        chunks = self._finalize_chunks(lines)
         await self._send_dm_chunks(requester, chunks)
-        logger.info("Repeater-Liste an %s: %d Repeater, %d Chunks",
-                    requester_prefix_hex, len(reps), len(chunks))
+        logger.info("Repeater-Liste an %s: %d von %d Repeater, %d Chunks",
+                    requester_prefix_hex, len(shown), len(reps), len(chunks))
 
     # ------------------------------------------------------------------
     # Channel Self-Service (add / remove)
@@ -1505,8 +1577,9 @@ class MeshCoreServer(BaseProtocol):
             self._registered_names[prefix_hex] = username
             welcome = (
                 f"Willkommen {username}, dein Account ist jetzt aktiv. "
-                f"Du erreichst das BBS per Direktnachricht. H = Hilfe & Befehlsuebersicht. "
-                f"Account loeschen: sende REMOVE als Direktnachricht. 73 de {bbs_call}"
+                f"Du erreichst das BBS per Direktnachricht, H = Hilfe. Hinweis: vor dem "
+                f"ersten S/SB ist einmalig eine kurze Pubkey-Bestaetigung per Code noetig. "
+                f"REMOVE loescht den Account (mit Rueckfrage zur Sicherheit). 73 de {bbs_call}"
             )
             await self._reply(bytes.fromhex(pubkey_hex)[:6], welcome)
             logger.info("Self-Service (open): %s registriert (pubkey %s...)",
@@ -1616,8 +1689,9 @@ class MeshCoreServer(BaseProtocol):
         bbs_call = self.config.get("callsign", "SysOp")
         welcome = (
             f"Bestaetigt! Hallo {username}, dein Account ist jetzt aktiv. "
-            f"Du erreichst das BBS per Direktnachricht. H = Hilfe & Befehlsuebersicht. "
-            f"Account loeschen: sende REMOVE als Direktnachricht. 73 de {bbs_call}"
+            f"Du erreichst das BBS per Direktnachricht, H = Hilfe. Hinweis: vor dem "
+            f"ersten S/SB ist einmalig eine kurze Pubkey-Bestaetigung per Code noetig. "
+            f"REMOVE loescht den Account (mit Rueckfrage zur Sicherheit). 73 de {bbs_call}"
         )
         await self._reply(bytes.fromhex(prefix_hex), welcome)
         logger.info("Self-Service: %s bestaetigt und registriert (pubkey %s...)",
@@ -1660,8 +1734,8 @@ class MeshCoreServer(BaseProtocol):
         return [
             "Fehler: Erst Sicherheitshinweis bestaetigen (siehe unten).",
             f"WICHTIG: Pubkey beweist Identitaet, nicht der Name! PK <Name> zeigt "
-            f"dessen Pubkey. Bestaetigen: OK {pending['code']} (15 Min), danach "
-            f"senden moeglich. 73 SysOp",
+            f"dessen Pubkey. Bestaetigen: OK {pending['code']} (15 Min) - deine "
+            f"Nachricht wird danach automatisch gesendet. 73 SysOp",
         ]
 
     async def _confirm_pubkey_ack(self, prefix_hex: str, text: str) -> bool:
@@ -1691,6 +1765,15 @@ class MeshCoreServer(BaseProtocol):
         await self._reply(bytes.fromhex(prefix_hex),
                            "Bestaetigt! Du kannst jetzt Nachrichten senden (S/SB). 73!")
         logger.info("Pubkey-Hinweis bestaetigt: %s (%s...)", name, prefix_hex[:12])
+
+        # Urspruenglich durch den Pubkey-Hinweis blockierten Sendeversuch (S/SB/RS/
+        # SBR) automatisch nachholen, damit der User ihn nicht erneut eintippen muss.
+        pending_text = self._pending_send_replay.pop(prefix_hex, None)
+        if pending_text and name:
+            result = await self._dispatch_bbs(name, pending_text, prefix_hex)
+            if result:
+                await self._send_dm_chunks(bytes.fromhex(prefix_hex),
+                                           self._finalize_chunks(result))
         return True
 
     async def _cmd_pubkey(self, arg: str, prefix_hex: str) -> list[str]:
@@ -1726,6 +1809,26 @@ class MeshCoreServer(BaseProtocol):
         await self._reply_channel(f"{sender} entfernt. 73!")
         logger.info("Self-Service: %s via Kanal entfernt", sender)
 
+    async def _handle_remove_request(self, pubkey_prefix: bytes, prefix_hex: str, callsign: str):
+        """REMOVE loescht erst nach Bestaetigung: derselbe Befehl muss innerhalb von
+        REMOVE_CONFIRM_WINDOW erneut gesendet werden -- verhindert versehentliches,
+        unwiderrufliches Loeschen des Kontos (inkl. Nachrichten, je nach Konfiguration)
+        durch einen Tippfehler oder zu fruehes Absenden. REMOVE bezieht sich immer nur
+        auf den eigenen Account (kein fremder Zielparameter) -- anders als bei K/ND
+        gibt es hier kein Enumerations-Risiko, die Rueckfrage kann also vor jeder
+        weiteren Pruefung erfolgen."""
+        now = time.time()
+        pending_since = self._pending_remove_confirm.get(prefix_hex)
+        if pending_since is not None and now - pending_since <= REMOVE_CONFIRM_WINDOW:
+            self._pending_remove_confirm.pop(prefix_hex, None)
+            await self._direct_remove(pubkey_prefix, prefix_hex, callsign)
+            return
+        self._pending_remove_confirm[prefix_hex] = now
+        await self._reply(pubkey_prefix,
+            f"Achtung: REMOVE loescht deinen Account dauerhaft (inkl. empfangener "
+            f"privater Nachrichten, ggf. auch gesendeter). Zum Bestaetigen innerhalb "
+            f"von {int(REMOVE_CONFIRM_WINDOW)}s erneut REMOVE senden.")
+
     async def _direct_remove(self, pubkey_prefix: bytes, prefix_hex: str, callsign: str):
         """remove via Direct Message – prueft ob prefix_hex zum gespeicherten Pubkey passt."""
         entry = await self.db.find_mc_contact_by_name(callsign)
@@ -1743,6 +1846,26 @@ class MeshCoreServer(BaseProtocol):
         self.evict_contact_cache(stored_pubkey_hex)
         await self._reply(pubkey_prefix, f"{callsign} entfernt. 73!")
         logger.info("Self-Service: %s entfernt (%s)", callsign, prefix_hex)
+
+    async def _handle_kill_request(self, prefix_hex: str, callsign: str, msg_id: int,
+                                   cmd_word: str) -> list[str]:
+        """K/ND loeschen erst nach Bestaetigung: derselbe Befehl (gleiche Nachrichten-
+        ID) muss innerhalb von KILL_CONFIRM_WINDOW erneut gesendet werden. Die
+        Berechtigungspruefung (can_kill, inkl. Maskierung nicht existierender/fremder
+        privater Nachrichten als "nicht gefunden") laeuft VOR der Rueckfrage und bei
+        jedem Versuch erneut -- damit bekommen unautorisierte Versuche exakt dieselbe
+        Antwort wie ohne Rueckfrage-Mechanismus (kein neues Enumerations-Leck)."""
+        ok, err = await self.bbs.can_kill(callsign, msg_id)
+        if not ok:
+            return err
+        now = time.time()
+        pending = self._pending_kill_confirm.get(prefix_hex)
+        if pending and pending[0] == msg_id and now - pending[1] <= KILL_CONFIRM_WINDOW:
+            self._pending_kill_confirm.pop(prefix_hex, None)
+            return await self.bbs.cmd_kill(callsign, msg_id)
+        self._pending_kill_confirm[prefix_hex] = (msg_id, now)
+        return [f"Nachricht #{msg_id} wirklich loeschen? Zum Bestaetigen innerhalb von "
+                f"{int(KILL_CONFIRM_WINDOW)}s erneut {cmd_word} {msg_id} senden."]
 
     def _retry_timeout(self, est_timeout_ms: int) -> float:
         """Leitet die ACK-Wartezeit aus dem vom Node gemeldeten est_timeout ab."""

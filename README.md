@@ -36,15 +36,17 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 ## Features
 
 ### BBS-Kern
-- **Private Nachrichten** — Postfach je Rufzeichen, konfigurierbares Limit, AES-256-GCM-verschlüsselt at-rest. Direktantwort per `RS<nr>|Text` ohne erneute Eingabe von Empfänger/Betreff (nur auf tatsächlich empfangene Nachrichten)
+- **Deutschsprachige Langform-Aliase** — jeder Kurzbefehl hat eine ausführlichere deutsche Alternative (z. B. `NACHRICHTEN` statt `N`, `SENDEN` statt `S`, `LOESCHEN` statt `K`/`ND`) für Nutzer, die sich mit den Kürzeln schwertun. Beide Formen funktionieren immer gleichwertig nebeneinander, nichts wurde ersetzt — siehe [Cheatsheet](#cheatsheet-kurzübersicht)
+- **Private Nachrichten** — Postfach je Rufzeichen, konfigurierbares Limit, AES-256-GCM-verschlüsselt at-rest. Direktantwort per `RS<nr>|Text` (auch `ANTWORT<nr>|Text`) ohne erneute Eingabe von Empfänger/Betreff (nur auf tatsächlich empfangene Nachrichten). Beim Senden per `S`/`SENDEN` wird sofort geprüft, ob das Ziel-Rufzeichen überhaupt registriert ist — bei Tippfehlern oder nicht (mehr) registrierten Empfängern warnt die Bestätigung explizit, statt eine Zustellung vorzutäuschen, die nie ankommt
 - **Proaktive Zustellung** — neue private Nachrichten werden dem Empfänger sofort per Direktnachricht mit vollem Inhalt zugestellt (kein Umweg über `NL`/`R<n>` nötig, gilt weiter als ungelesen bis explizit gelesen), plus eine einmalige Erinnerung 3 Tage vor Löschung einer ungelesenen Nachricht (Löschfrist konfigurierbar, Default 30 Tage). Ist der Empfänger gerade nicht erreichbar, zeigt das Hauptmenü beim nächsten Login einen Badge mit der Anzahl ungelesener Nachrichten
-- **Board/Bulletins** — öffentliche Nachrichten, sticky-Flag (nie automatisch gelöscht), automatische Aufräumung nach konfigurierbarer Frist
+- **Board/Bulletins** — öffentliche Nachrichten, sticky-Flag (nie automatisch gelöscht), automatische Aufräumung nach konfigurierbarer Frist. Direktantwort auf ein Bulletin per `SBR<nr>|Text` (auch `BULLETINANTWORT<nr>|Text`) als neues Bulletin mit „Re: "-Betreff, analog zu `RS<nr>|Text` bei privaten Nachrichten
+- **Bestätigung vor destruktiven Befehlen** — `REMOVE` (Account löschen) und `K`/`ND`/`LOESCHEN` (Nachricht löschen) führen nicht mehr sofort aus, sondern verlangen dieselbe Eingabe ein zweites Mal innerhalb eines kurzen Zeitfensters (2 Minuten bzw. 1 Minute) — schützt vor Tippfehlern und versehentlichem Absenden, ohne eine zusätzliche Bestätigungssyntax lernen zu müssen
 - **Self-Service-Registrierung** — Nutzer registrieren sich per `add` direkt über den MeshCore-Kanal, kein manuelles Anlegen durch den SysOp nötig. Drei Modi wählbar (Web-Admin -> Einstellungen): Pubkey-Bestätigung per Direktnachricht-Challenge (Status quo, verhindert dass sich jemand einen fremden Rufzeichen-Namen unter dem eigenen Pubkey sichert), sofortige Freischaltung ohne Prüfung, oder manuelle Freischaltung durch den SysOp im Web-Admin (siehe [Self-Service-Registrierung](#self-service-registrierung-nur-meshcore-kanal))
 - **Kontakt-Einladung per QR/Link** — die BBS schickt eine `meshcore://contact/<pubkey>`-URI, die die MeshCore-App direkt als "Kontakt hinzufügen"-Dialog anbietet
 - **Inaktivitäts-Bereinigung** — User ohne jede BBS-Aktivität werden nach konfigurierbarer Frist (Default 60 Tage) automatisch entfernt, mit bis zu 3 frei einstellbaren Erinnerungs-DMs vorher (siehe [Inaktivitäts-Bereinigung](#inaktivitäts-bereinigung))
-- **Pubkey-Sicherheitshinweis & Senderecht** — vor dem ersten Senden muss jeder User per Direktnachricht-Challenge bestätigen, dass der Pubkey (nicht der Name) die Identität beweist; der SysOp kann das Senderecht je User im Web-Admin dauerhaft sperren/entsperren
+- **Pubkey-Sicherheitshinweis & Senderecht** — vor dem ersten Senden muss jeder User per Direktnachricht-Challenge bestätigen, dass der Pubkey (nicht der Name) die Identität beweist; ein dadurch blockierter Sendeversuch wird nach erfolgreicher Bestätigung automatisch nachgeholt, ohne die Nachricht erneut eintippen zu müssen. Der SysOp kann das Senderecht je User im Web-Admin dauerhaft sperren/entsperren
 - **Wetter-Integration** — aktuelle Werte + 1-/3-Tage-Vorhersage über eine angebundene [Home Assistant](https://www.home-assistant.io/)-Instanz
-- **PING/Traceroute** — Pfad- und Laufzeitmessung zu einzelnen Nodes/Repeatern im Mesh, mit automatischem Retry bei Paketverlust
+- **PING/Traceroute** — Pfad- und Laufzeitmessung zu einzelnen Nodes/Repeatern im Mesh, mit automatischem Retry bei Paketverlust. Die Repeaterliste (`PING` ohne Argument) ist auf 15 Einträge gedeckelt (mit Hinweis auf `PING <Teilname>` zum Eingrenzen), statt bei vielen bekannten Repeatern unbegrenzt viele Nachrichten zu verschicken
 - **Feature-Flags** — jede Funktionsgruppe (Nachrichten, Board, Wetter, Sysinfo, Online-Liste, Userliste, PING, Account, Self-Service) einzeln im Web-Admin abschaltbar, wirkt sofort ohne Neustart
 
 ### Zugangsweg
@@ -74,76 +76,78 @@ Alle Befehle laufen über den MeshCore-Kanal (Broadcast) bzw. Direktnachrichten.
 
 ### Cheatsheet (Kurzübersicht)
 
+Jede Zeile zeigt Kürzel **und** deutsche Langform (in Klammern) — beide funktionieren immer gleichwertig.
+
 | Befehl | | Befehl | |
 |---|---|---|---|
-| `H` / `?` | Hauptmenü | `WX` / `WX1` / `WX3` | Wetter: aktuell / morgen / 3 Tage |
-| `N` · `B` · `W` · `I` · `A` | Menüs: Nachrichten/Board/Wetter/Info/Account | `SI` | Sysinfo |
-| `NL` / `NLO <n>` | Nachrichtenliste / weitere ab `n` | `O` | Wer online |
-| `BL` / `BLO <n>` | Board-Liste / weitere ab `n` | `LU` | Userliste |
-| `R <nr>` | Nachricht/Board-Eintrag lesen | `PING` / `PING <Name>` | Repeaterliste / Traceroute |
-| `S TO\|Betreff\|Text` | Private Nachricht senden | `PK` / `PK <Name>` | Eigener / fremder Pubkey |
-| `RS<nr>\|Text` | Antwort (Empfänger/Betreff automatisch) | `MI` | Eigene Account-Info |
-| `SB Thema\|Text` | Board-Bulletin veröffentlichen | `MC <mail>` | Mailkontakt setzen |
-| `ND <nr>` / `K <nr>` | Nachricht/Bulletin löschen (eigene) | `OK <Code>` | Pubkey-Sicherheitshinweis bestätigen |
-| `add NAME:PUBKEY` | Registrieren (nur Kanal) | `REMOVE` | Abmelden (nur Direktnachricht) |
+| `H` / `?` | Hauptmenü | `WX` (`WETTER`) / `WX1` (`MORGEN`) / `WX3` (`DREITAGE`) | Wetter: aktuell / morgen / 3 Tage |
+| `N` (`NACHRICHTEN`) · `B` (`BOARD`) · `W` · `I` (`INFO`) · `A` (`ACCOUNT`) | Menüs | `SI` (`SYSINFO`) | Sysinfo |
+| `NL` / `NLO <n>` (`NACHRICHTENLISTE [<n>]`) | Nachrichtenliste / weitere ab `n` | `O` (`ONLINE`) | Wer online |
+| `BL` / `BLO <n>` (`BOARDLISTE [<n>]`) | Board-Liste / weitere ab `n` | `LU` (`USERLISTE`) | Userliste |
+| `R <nr>` (`LESEN <nr>`) | Nachricht/Board-Eintrag lesen | `PING` / `PING <Name>` | Repeaterliste (max. 15) / Traceroute |
+| `S TO\|Betreff\|Text` (`SENDEN`) | Private Nachricht senden | `PK` / `PK <Name>` (`PUBKEY`) | Eigener / fremder Pubkey |
+| `RS<nr>\|Text` (`ANTWORT<nr>\|Text`) | Antwort (Empfänger/Betreff automatisch) | `MI` (`MEINEINFO`) | Eigene Account-Info |
+| `SB Thema\|Text` (`BULLETIN`) | Board-Bulletin veröffentlichen | `MC <mail>` (`MAIL <mail>`) | Mailkontakt setzen |
+| `SBR<nr>\|Text` (`BULLETINANTWORT<nr>\|Text`) | Antwort auf ein Bulletin (neues Bulletin) | `OK <Code>` | Pubkey-Sicherheitshinweis bestätigen |
+| `ND <nr>` / `K <nr>` (`LOESCHEN <nr>`) | Nachricht/Bulletin löschen (eigene, **mit Rückfrage**) | `add NAME:PUBKEY` | Registrieren (nur Kanal) |
+| | | `REMOVE` | Abmelden (nur Direktnachricht, **mit Rückfrage**) |
 
-Zahlenargumente (`R`, `NLO`, `BLO`, `ND`, `K`) auch direkt angehängt: `R5` = `R 5`. Details, Berechtigungen und Grenzfälle siehe die Tabellen unten.
+Zahlenargumente bei den **Kürzeln** (`R`, `NLO`, `BLO`, `ND`, `K`, `BL`, `NL`) auch direkt angehängt: `R5` = `R 5`. Bei den deutschen Langformen (`LESEN`, `LOESCHEN`, `BOARDLISTE`, `NACHRICHTENLISTE`, ...) immer mit Leerzeichen: `LESEN 5`. Details, Berechtigungen und Grenzfälle siehe die Tabellen unten.
 
 Zum Ausdrucken gibt es außerdem eine Kreditkarten-große Steckkarten-Version (Vorder-/Rückseite, zum Ausschneiden und Laminieren): [`docs/cheatsheet.html`](docs/cheatsheet.html) im Browser öffnen und drucken (`Drucken → Tatsächliche Größe`).
 
 ### Navigation (zeigt Untermenü)
 
-| Befehl | Bedeutung |
-|---|---|
-| `H` / `?` | Hauptmenü |
-| `N` | Nachrichten-Menü |
-| `B` | Board-Menü |
-| `W` | Wetter-Menü |
-| `I` | Info-Menü |
-| `A` | Account-Menü |
+| Befehl | Langform | Bedeutung |
+|---|---|---|
+| `H` / `?` | `HELP` | Hauptmenü |
+| `N` | `NACHRICHTEN` | Nachrichten-Menü |
+| `B` | `BOARD` | Board-Menü |
+| `W` | *(`WETTER` liefert direkt die Daten, siehe unten)* | Wetter-Menü |
+| `I` | `INFO` | Info-Menü |
+| `A` | `ACCOUNT` | Account-Menü |
 
 ### Nachrichten & Board
 
-| Befehl | Bedeutung |
-|---|---|
-| `NL` | Eigene Nachrichtenliste (neueste zuerst) |
-| `NLO <n>` | Weitere Nachrichten ab Position `n` |
-| `BL` | Board-Liste (Sticky zuerst) |
-| `BLO <n>` | Weitere Board-Einträge ab Position `n` |
-| `R <nr>` | Nachricht/Board-Eintrag `<nr>` lesen |
-| `S TO\|Betreff\|Text` | Private Nachricht senden |
-| `RS<nr>\|Text` | Antwort auf empfangene private Nachricht `<nr>` — Empfänger und Betreff (mit „Re: "-Präfix) werden automatisch aus der Original-Nachricht übernommen, nur für den tatsächlichen Empfänger nutzbar |
-| `SB Thema\|Text` | Board-Nachricht (Bulletin) veröffentlichen |
-| `ND <nr>` / `K <nr>` | Nachricht `<nr>` löschen — bei privaten Nachrichten nur der Empfänger, bei Board-Bulletins nur der Autor, zusätzlich immer der SysOp und die konfigurierten Co-SysOps (auch als `ND<nr>`/`K<nr>` ohne Leerzeichen) |
+| Befehl | Langform | Bedeutung |
+|---|---|---|
+| `NL` / `NLO <n>` | `NACHRICHTENLISTE [<n>]` | Eigene Nachrichtenliste (neueste zuerst); mit Zahlenargument weitere ab Position `n`. `NLO` ist eine weiterhin funktionierende Alt-Form, seit `NL` selbst das Zahlenargument entgegennimmt |
+| `BL` / `BLO <n>` | `BOARDLISTE [<n>]` | Board-Liste (Sticky zuerst); mit Zahlenargument weitere ab Position `n`. `BLO` ist ebenso eine weiterhin funktionierende Alt-Form |
+| `R <nr>` | `LESEN <nr>` | Nachricht/Board-Eintrag `<nr>` lesen |
+| `S TO\|Betreff\|Text` | `SENDEN TO\|Betreff\|Text` | Private Nachricht senden. Betreff darf kein `\|` enthalten (wird als Trennzeichen verwendet). Ist `TO` nicht registriert, warnt die Bestätigung explizit statt eine Zustellung vorzutäuschen |
+| `RS<nr>\|Text` | `ANTWORT<nr>\|Text` | Antwort auf empfangene private Nachricht `<nr>` — Empfänger und Betreff (mit „Re: "-Präfix) werden automatisch aus der Original-Nachricht übernommen, nur für den tatsächlichen Empfänger nutzbar |
+| `SB Thema\|Text` | `BULLETIN Thema\|Text` | Board-Nachricht (Bulletin) veröffentlichen. Thema darf kein `\|` enthalten |
+| `SBR<nr>\|Text` | `BULLETINANTWORT<nr>\|Text` | Antwort auf ein Board-Bulletin `<nr>` als neues Bulletin (Thema mit „Re: "-Präfix) |
+| `ND <nr>` / `K <nr>` | `LOESCHEN <nr>` | Nachricht `<nr>` löschen — bei privaten Nachrichten nur der Empfänger, bei Board-Bulletins nur der Autor, zusätzlich immer der SysOp und die konfigurierten Co-SysOps. **Erfordert Bestätigung:** derselbe Befehl muss innerhalb von 60 Sekunden erneut gesendet werden, sonst wird nur nachgefragt und nichts gelöscht |
 
-Befehle mit Zahlenargument (`R`, `NLO`, `BLO`, `ND`, `K`) akzeptieren die Nummer wahlweise mit Leerzeichen (`R 5`) oder direkt angehängt (`R5`).
+Befehle mit Zahlenargument bei den Kürzeln (`R`, `NLO`, `BLO`, `ND`, `K`, `BL`, `NL`) akzeptieren die Nummer wahlweise mit Leerzeichen (`R 5`) oder direkt angehängt (`R5`). Die deutschen Langformen (`LESEN`, `LOESCHEN`, `BOARDLISTE`, `NACHRICHTENLISTE`) benötigen immer ein Leerzeichen (`LESEN 5`).
 
 ### Wetter (Home-Assistant-Integration)
 
-| Befehl | Bedeutung |
-|---|---|
-| `WX` | Aktuelles Wetter |
-| `WX1` | Vorhersage morgen |
-| `WX3` | Vorhersage 3 Tage |
+| Befehl | Langform | Bedeutung |
+|---|---|---|
+| `WX` | `WETTER` | Aktuelles Wetter |
+| `WX1` | `MORGEN` | Vorhersage morgen |
+| `WX3` | `DREITAGE` | Vorhersage 3 Tage |
 
 ### Info & Sonstiges
 
-| Befehl | Bedeutung |
-|---|---|
-| `SI` | Sysinfo (Nutzerzahl, Nachrichten, aktive Sessions) |
-| `O` | Wer ist gerade online/aktiv |
-| `LU` | Liste aller registrierten Nutzer |
-| `PING` | Liste bekannter Repeater |
-| `PING <Name>` | Traceroute zu einem Node/Repeater — Pfad, Laufzeit, SNR je Hop |
-| `PK` | Eigener voller Pubkey (64 Hex), zur Weitergabe an andere |
-| `PK <Name>` | Voller Pubkey (64 Hex) eines Kontakts — vor dem Senden abgleichen, da Namen fälschbar/duplizierbar sind |
-| `MI` | Eigene Account-Info |
-| `MC <mail>` | Mail-Kontaktadresse hinterlegen, z. B. `MC name@example.com` |
-| `REMOVE` | Eigene Registrierung löschen (nur per Direktnachricht) |
+| Befehl | Langform | Bedeutung |
+|---|---|---|
+| `SI` | `SYSINFO` | Sysinfo (Nutzerzahl, Nachrichten, aktive Sessions) |
+| `O` | `ONLINE` | Wer ist gerade online/aktiv |
+| `LU` | `USERLISTE` | Liste aller registrierten Nutzer |
+| `PING` | – | Liste bekannter Repeater (max. 15 auf einmal, mit Hinweis auf `PING <Teilname>` bei mehr) |
+| `PING <Name>` | – | Traceroute zu einem Node/Repeater — Pfad, Laufzeit, SNR je Hop |
+| `PK` | `PUBKEY` | Eigener voller Pubkey (64 Hex), zur Weitergabe an andere |
+| `PK <Name>` | `PUBKEY <Name>` | Voller Pubkey (64 Hex) eines Kontakts — vor dem Senden abgleichen, da Namen fälschbar/duplizierbar sind |
+| `MI` | `MEINEINFO` | Eigene Account-Info |
+| `MC <mail>` | `MAIL <mail>` | Mail-Kontaktadresse hinterlegen, z. B. `MC name@example.com` |
+| `REMOVE` | – | Eigene Registrierung löschen (nur per Direktnachricht). **Erfordert Bestätigung:** `REMOVE` muss innerhalb von 2 Minuten ein zweites Mal gesendet werden, sonst erfolgt nur ein Warnhinweis und nichts wird gelöscht |
 
 ### Pubkey-Sicherheitshinweis (einmalig pro User)
 
-Vor dem ersten `S`/`SB` muss jeder User (auch Bestandsuser) per Direktnachricht bestätigen, dass er verstanden hat: der angezeigte **Name** ist kein Identitätsnachweis — nur der **Pubkey** ist verlässlich. Ein Sendeversuch ohne Bestätigung liefert eine Fehlermeldung plus den Hinweistext mit einem 6-stelligen Code; Antwort per `OK <Code>` (15 Min. gültig) schaltet `S`/`SB` frei. Andere Befehle (`H`, `NL`, `R`, `WX`, ...) bleiben in der Zwischenzeit normal nutzbar.
+Vor dem ersten `S`/`SB` (bzw. `RS`/`SBR` und deren Langformen) muss jeder User (auch Bestandsuser) per Direktnachricht bestätigen, dass er verstanden hat: der angezeigte **Name** ist kein Identitätsnachweis — nur der **Pubkey** ist verlässlich. Ein Sendeversuch ohne Bestätigung liefert eine Fehlermeldung plus den Hinweistext mit einem 6-stelligen Code; Antwort per `OK <Code>` (15 Min. gültig) schaltet das Senden frei. Andere Befehle (`H`, `NL`, `R`, `WX`, ...) bleiben in der Zwischenzeit normal nutzbar. Der ursprünglich blockierte Sendeversuch wird nach erfolgreicher Bestätigung automatisch nachgeholt — er muss nicht erneut eingetippt werden.
 
 ### Self-Service-Registrierung (nur MeshCore-Kanal)
 
@@ -170,7 +174,7 @@ add BENUTZERNAME:PUBKEY
 
 Zum Schutz vor Missbrauch/Spam sind maximal 2 neue Registrierungsanträge pro Minute zulässig; weitere `add`-Versuche werden in dieser Zeit mit einer Fehlermeldung abgewiesen.
 
-Danach: `REMOVE` als Direktnachricht löscht die eigene Registrierung jederzeit wieder.
+Danach: `REMOVE` als Direktnachricht löscht die eigene Registrierung jederzeit wieder — aus Sicherheitsgründen erst nach zweimaligem Senden innerhalb von 2 Minuten (siehe [Cheatsheet](#cheatsheet-kurzübersicht)).
 
 ### Inaktivitäts-Bereinigung
 
@@ -287,8 +291,9 @@ core/
   crypto.py                  At-Rest-Verschluesselung, Passwort-Hashing
   validation.py               Rufzeichen/Namen-Validierung
   sanitize.py                  Log-Ausgabe-Bereinigung
-  weather.py                    Home-Assistant-Wetter-Client
-  webtls.py                      Self-signed-Zertifikat-Erzeugung
+  timeutil.py                   Zeitstempel-Hilfsfunktion (Python-3.12-sicher)
+  weather.py                     Home-Assistant-Wetter-Client
+  webtls.py                       Self-signed-Zertifikat-Erzeugung
 protocols/
   meshcore/
     server.py                 MeshCore-Companion-Protokoll, Frame-Dispatch

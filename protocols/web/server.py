@@ -1809,7 +1809,7 @@ class WebAdminServer(BaseProtocol):
         for call, d in sorted(by_user.items(), key=lambda kv: -kv[1].get("rx", 0)):
             ack, noack = d.get("ack", 0), d.get("noack", 0)
             total = ack + noack
-            quote = f"{100 * ack / total:.0f}%" if total else "-"
+            ack_quote = f"{100 * ack / total:.0f}%" if total else "-"
             cls = "ok" if total and ack / total >= 0.8 else ("warn" if total else "")
             rtt = f"{d['avg_rtt']:.0f} ms" if d.get("avg_rtt") else "-"
             last = last_snr.get(call)
@@ -1836,7 +1836,7 @@ class WebAdminServer(BaseProtocol):
             urows.append(f"<tr><td><b>{self._fmt_callsign(call)}</b></td><td>{d.get('rx', 0)}</td>"
                          f"<td>{routing_cell}</td>"
                          f"<td>{ack}</td><td>{noack}</td>"
-                         f"<td class='{cls}'>{quote}</td><td>{rtt}</td>"
+                         f"<td class='{cls}'>{ack_quote}</td><td>{rtt}</td>"
                          f"<td class='{last_cls}'>{last_txt}</td>"
                          f"<td class='{snr_cls}'>{snr_txt}</td>"
                          f"<td>{spark}</td></tr>")

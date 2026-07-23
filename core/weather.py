@@ -112,7 +112,7 @@ async def fetch_weather(ha_url: str, ha_token: str, qth: str = "QTH",
         values: dict[str, Optional[str]] = dict(results)
     except Exception:
         logger.error("WX: HA nicht erreichbar")
-        return ["WX: HA nicht erreichbar"]
+        return ["WX: Wetterdienst nicht erreichbar"]
 
     def v(eid: str, decimals: int = 1) -> str:
         val = values.get(eid)
@@ -201,7 +201,7 @@ async def fetch_forecast_1day(ha_url: str, ha_token: str, qth: str = "QTH",
         forecasts = await _fetch_forecasts(ha_url, ha_token, verify_ssl)
     except Exception:
         logger.error("WX1: HA nicht erreichbar")
-        return ["WX: HA nicht erreichbar"]
+        return ["WX: Wetterdienst nicht erreichbar"]
 
     if len(forecasts) < 2:
         return ["WX1: Keine Vorhersage verfuegbar"]
@@ -239,7 +239,7 @@ async def fetch_forecast_3days(ha_url: str, ha_token: str, qth: str = "QTH",
         forecasts = await _fetch_forecasts(ha_url, ha_token, verify_ssl)
     except Exception:
         logger.error("WX3: HA nicht erreichbar")
-        return ["WX: HA nicht erreichbar"]
+        return ["WX: Wetterdienst nicht erreichbar"]
 
     next3 = forecasts[1:4]
     if not next3:
