@@ -643,6 +643,15 @@ class WebAdminServer(BaseProtocol):
             f.write("# Von der Web-Admin-Oberflaeche verwaltete Overrides.\n"
                     "# Wird in main.py ueber config.yaml gemergt – nicht von Hand editieren.\n")
             yaml.safe_dump(overlay, f, allow_unicode=True, sort_keys=False)
+        # Enthaelt den Passwort-Hash -- bei JEDEM Schreiben erzwingen, nicht nur bei
+        # der Erst-Erzeugung (_ensure_initial_password/set_web_password.py setzen es
+        # bereits, aber open(path, "w") aendert den Modus einer bereits bestehenden
+        # Datei nicht; ohne dies bleiben einmal falsche Rechte -- z.B. durch manuelles
+        # Anlegen -- dauerhaft falsch).
+        try:
+            os.chmod(WEBCONFIG_PATH, 0o600)
+        except OSError:
+            pass
 
     def _cfg_get(self, path: tuple):
         node = self.config

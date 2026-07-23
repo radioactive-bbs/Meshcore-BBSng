@@ -110,6 +110,10 @@ ok "Datenverzeichnis: $INSTALL_DIR/data"
 SECRETS="$INSTALL_DIR/config/secrets.yaml"
 if [[ ! -f "$SECRETS" ]]; then
     sudo -u "$SERVICE_USER" cp "$INSTALL_DIR/config/secrets.yaml.example" "$SECRETS"
+    # Enthaelt den HA-Token (und ggf. den At-Rest-Schluessel im Legacy-Inline-
+    # Modus) -- ohne explizites chmod erbt die Datei den Standard-umask (haeufig
+    # 644, fuer alle lokalen User lesbar).
+    sudo -u "$SERVICE_USER" chmod 600 "$SECRETS"
     echo ""
     echo -e "${YELLOW}ACHTUNG:${NC} $SECRETS wurde aus dem Template erstellt."
     echo "         HA-Token eintragen:"
@@ -123,6 +127,9 @@ fi
 CONFIG_LOCAL="$INSTALL_DIR/config/config.local.yaml"
 if [[ ! -f "$CONFIG_LOCAL" ]]; then
     sudo -u "$SERVICE_USER" cp "$INSTALL_DIR/config/config.local.yaml.example" "$CONFIG_LOCAL"
+    # Enthaelt Betreiberdaten (Rufzeichen, QTH, MeshCore-Kontakte/-Pubkeys) --
+    # gleiche Begruendung wie bei secrets.yaml oben.
+    sudo -u "$SERVICE_USER" chmod 600 "$CONFIG_LOCAL"
     echo ""
     echo -e "${YELLOW}ACHTUNG:${NC} $CONFIG_LOCAL wurde aus dem Template erstellt."
     echo "         Eigene Betreiberdaten eintragen (Rufzeichen, QTH, MeshCore-Kanal/-Kontakte):"

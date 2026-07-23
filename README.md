@@ -242,6 +242,8 @@ pip install -r requirements.txt
 
 cp config/secrets.yaml.example config/secrets.yaml       # HA-Token eintragen
 cp config/config.local.yaml.example config/config.local.yaml   # eigene Betreiberdaten eintragen
+chmod 600 config/secrets.yaml config/config.local.yaml   # enthalten Geheimnisse/Betreiberdaten
+# (main.py korrigiert falsche Rechte an diesen Dateien beim Start ohnehin automatisch)
 
 # At-Rest-Schluessel erzeugen und eintragen (sonst unverschluesselte Nachrichten!)
 python -c "from core.crypto import generate_key; print(generate_key())"

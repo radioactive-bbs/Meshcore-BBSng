@@ -26,6 +26,24 @@ def _deep_merge(base: dict, overrides: dict) -> None:
             base[key] = val
 
 
+def _secure_config_file(path: str) -> None:
+    """Erzwingt 0600 auf einer gitignored Config-Datei mit Geheimnissen/
+    Betreiberdaten (secrets.yaml, config.local.yaml, webconfig.yaml). Diese
+    Dateien entstehen per einfachem 'cp' (setup_pi.sh) oder manuellem Kopieren
+    mit dem Standard-umask (haeufig 644) -- ohne diesen Check blieben sie fuer
+    alle lokalen User lesbar (HA-Token, At-Rest-Schluessel, Passwort-Hash,
+    Betreiberdaten). Best-effort: Ist der Prozess nicht Owner der Datei,
+    bleibt es bei einer Log-Warnung statt eines harten Fehlers beim Start."""
+    try:
+        current = os.stat(path).st_mode & 0o777
+        if current != 0o600:
+            os.chmod(path, 0o600)
+            logger.warning("Dateirechte von %s korrigiert (%o -> 600) - "
+                           "Datei enthaelt Geheimnisse/Betreiberdaten", path, current)
+    except OSError as exc:
+        logger.warning("Konnte Dateirechte von %s nicht pruefen/setzen: %s", path, exc)
+
+
 def _load_messages_key(config: dict):
     """Laedt den At-Rest-Schluessel (Base64, 32 Byte) aus der ersten verfuegbaren
     Quelle. Rueckgabe: (key_bytes|None, quelle_str|None).
@@ -176,6 +194,7 @@ async def main():
     # siehe config/config.local.yaml.example.
     local_path = "config/config.local.yaml"
     if os.path.exists(local_path):
+        _secure_config_file(local_path)
         with open(local_path, "r", encoding="utf-8") as f:
             local_config = yaml.safe_load(f) or {}
         _deep_merge(config, local_config)
@@ -187,6 +206,7 @@ async def main():
 
     # Overlay der Web-Admin-Oberflaeche (Einstellungen aus der UI)
     if os.path.exists(WEBCONFIG_PATH):
+        _secure_config_file(WEBCONFIG_PATH)
         with open(WEBCONFIG_PATH, "r", encoding="utf-8") as f:
             webconfig = yaml.safe_load(f) or {}
         _deep_merge(config, webconfig)
@@ -194,6 +214,7 @@ async def main():
 
     secrets_path = "config/secrets.yaml"
     if os.path.exists(secrets_path):
+        _secure_config_file(secrets_path)
         with open(secrets_path, "r", encoding="utf-8") as f:
             secrets = yaml.safe_load(f) or {}
         _deep_merge(config, secrets)
