@@ -58,7 +58,7 @@ Klassisches BBS-Feeling (private Nachrichten, Board/Bulletins, Wetterabfrage) au
 - Nachrichtenverwaltung (Board: Volltext + Sticky-Toggle; Privat: nur Metadaten)
 - Live-Einstellungen: TX-Power, Path-Hash-Mode, Region-Scope, Kanalname — wirken sofort am Node, kein Neustart nötig
 - Registrierungs- und Inaktivitäts-Einstellungen: Registrierungsmodus, Inaktivitätsfrist, Warnschwellen, Nachrichten-Löschverhalten bei User-Entfernung
-- Statistik-Dashboard: Nachrichtenaufkommen, Routing-Art (Flood / Direkt bestätigt / Multihop / Pfad unbekannt), SNR-Verlauf je Nutzer
+- Statistik-Dashboard: Nachrichtenaufkommen, Routing-Art (Flood / Direkt bestätigt / Multihop / Pfad unbekannt), SNR-Verlauf je Nutzer, Feature-Nutzung (Aufrufe je Befehl, heute + Zeitraum + Verlauf)
 - Debug-Ansicht mit Live-Journal-Log (journalctl-Anbindung)
 - Datenbank-Backup-Download (konsistenter SQLite-Snapshot)
 - Eigenes self-signed HTTPS-Zertifikat (automatisch erzeugt) oder Import eines eigenen Zertifikats

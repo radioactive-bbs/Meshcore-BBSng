@@ -78,6 +78,37 @@ NODE_TIMEOUT    = 600   # Sekunden bis Node als "offline" gilt
 # NACHRICHTENLISTE, ...) bekommen bewusst KEINE Attached-Digit-Bequemlichkeit --
 # "LESEN5" waere unhandlich, wer die Langform braucht tippt ohnehin mit Leerzeichen.
 _NUMERIC_ARG_CMDS = {"R", "K", "ND", "BLO", "NLO", "BL", "NL"}
+
+# Feature-Nutzungsstatistik (Web-Admin: Statistik-Seite) -- jeder erkannte
+# Befehl wird beim Dispatch als events-Zeile (type='cmd', detail=Label) geloggt,
+# damit spaeter sichtbar ist, wie oft ein Feature tatsaechlich genutzt wird (auch
+# versteckte wie LOTTO). NEUE BEFEHLE HIER EINTRAGEN, sonst tauchen sie in der
+# Statistik nicht auf -- Aliase eines Befehls teilen sich bewusst ein Label,
+# damit z.B. WX/WETTER nicht als zwei getrennte Zeilen erscheinen.
+_USAGE_LABELS = {
+    "W": "Wetter", "WX": "Wetter", "WETTER": "Wetter",
+    "WX1": "Wetter", "MORGEN": "Wetter",
+    "WX3": "Wetter", "DREITAGE": "Wetter",
+    "N": "Nachrichten", "NACHRICHTEN": "Nachrichten",
+    "NL": "Nachrichtenliste", "NLO": "Nachrichtenliste", "NACHRICHTENLISTE": "Nachrichtenliste",
+    "B": "Board", "BOARD": "Board",
+    "BL": "Boardliste", "BLO": "Boardliste", "BOARDLISTE": "Boardliste",
+    "L": "Liste",
+    "R": "Lesen", "LESEN": "Lesen",
+    "S": "Senden", "SP": "Senden", "SENDEN": "Senden",
+    "SB": "Bulletin senden", "BULLETIN": "Bulletin senden",
+    "K": "Loeschen", "ND": "Loeschen", "LOESCHEN": "Loeschen",
+    "I": "Info", "INFO": "Info",
+    "A": "Account", "ACCOUNT": "Account",
+    "MI": "Meine Info", "MEINEINFO": "Meine Info",
+    "MC": "Mail setzen", "MAIL": "Mail setzen",
+    "SI": "Sysinfo", "SYSINFO": "Sysinfo",
+    "O": "Online", "ONLINE": "Online",
+    "LU": "Userliste", "USERLISTE": "Userliste",
+    "PING": "Ping",
+    "PK": "Pubkey-Anzeige", "PUBKEY": "Pubkey-Anzeige",
+    "LOTTO": "Lotto",
+}
 _USER_RE = USERNAME_RE  # siehe core/validation.py
 MAX_MSG_LEN     = 150   # Firmware-Limit: max 150 Zeichen pro Paket
 CONFIRM_TIMEOUT = 30.0  # Fallback-Sekunden, falls Node kein est_timeout liefert
@@ -1088,9 +1119,12 @@ class MeshCoreServer(BaseProtocol):
             return
         # Pubkey-Hinweis-Bestaetigung: nur "OK <Code>"-Antworten werden abgefangen,
         # alle anderen Befehle bleiben waehrend der Wartezeit normal nutzbar (nur
-        # S/SB sind bis zur Bestaetigung gesperrt, siehe _pubkey_ack_gate).
-        if prefix_hex in self._pending_pubkey_ack and \
-                await self._confirm_pubkey_ack(prefix_hex, msg.text):
+        # S/SB sind bis zur Bestaetigung gesperrt, siehe _pubkey_ack_gate). Der
+        # Regex-Check auf "OK <Code>" passiert INNERHALB von _confirm_pubkey_ack,
+        # damit auch ein durch Neustart/Ablauf verlorener Pending-Eintrag noch
+        # eine verstaendliche Antwort bekommt statt in "Unbekannt: OK" zu fallen
+        # (siehe dortiger Kommentar).
+        if await self._confirm_pubkey_ack(prefix_hex, msg.text):
             return
 
         # Identitaet IMMER ueber den Pubkey-Prefix aufloesen, nie ueber den vom Node
@@ -1128,6 +1162,7 @@ class MeshCoreServer(BaseProtocol):
         # remove nur per Direct Message erlaubt (Pubkey-Prefix Verifikation)
         cmd0 = msg.text.strip().split(None, 1)[0].upper() if msg.text.strip() else ""
         if cmd0 == "REMOVE":
+            self._create_tracked_task(self.db.log_event("cmd", callsign, "Abmelden"))
             await self._handle_remove_request(msg.pubkey_prefix, prefix_hex, callsign)
             return
 
@@ -1176,6 +1211,7 @@ class MeshCoreServer(BaseProtocol):
         # Parsing behandelt. ANTWORT ist die deutschsprachige Langform von RS.
         m_reply = re.match(r'^(?:RS|ANTWORT)(\d+)\|(.*)$', text.strip(), re.IGNORECASE | re.DOTALL)
         if m_reply:
+            self._create_tracked_task(self.db.log_event("cmd", callsign, "Antworten"))
             if not self.bbs.feature_enabled("messages"):
                 return [f"Unbekannt: RS  H=Hilfe"]
             gate = await self._pubkey_ack_gate(prefix_hex, callsign)
@@ -1193,6 +1229,7 @@ class MeshCoreServer(BaseProtocol):
         m_bulletin_reply = re.match(r'^(?:SBR|BULLETINANTWORT)(\d+)\|(.*)$',
                                     text.strip(), re.IGNORECASE | re.DOTALL)
         if m_bulletin_reply:
+            self._create_tracked_task(self.db.log_event("cmd", callsign, "Bulletin-Antwort"))
             if not self.bbs.feature_enabled("board"):
                 return [f"Unbekannt: SBR  H=Hilfe"]
             gate = await self._pubkey_ack_gate(prefix_hex, callsign)
@@ -1218,6 +1255,10 @@ class MeshCoreServer(BaseProtocol):
             m = re.match(r'^([A-Z]+)(\d+)$', cmd)
             if m and m.group(1) in _NUMERIC_ARG_CMDS:
                 cmd, arg = m.group(1), m.group(2)
+
+        usage_label = _USAGE_LABELS.get(cmd)
+        if usage_label:
+            self._create_tracked_task(self.db.log_event("cmd", callsign, usage_label))
 
         active = [c.name for c in self._contacts.values()
                   if self._nodes.get(c.pubkey_prefix.hex(), 0) > time.time() - NODE_TIMEOUT]
@@ -1746,17 +1787,29 @@ class MeshCoreServer(BaseProtocol):
         Nachricht als Bestaetigungsversuch erkannt wurde (dann NICHT mehr als
         normalen BBS-Befehl weiterverarbeiten) -- alle anderen Texte werden
         ignoriert (False), damit S/SB gesperrt bleibt, aber sonstige Befehle
-        (H, NL, R, WX, ...) waehrend der Wartezeit normal nutzbar bleiben."""
-        pending = self._pending_pubkey_ack.get(prefix_hex)
-        if not pending:
-            return False
+        (H, NL, R, WX, ...) waehrend der Wartezeit normal nutzbar bleiben.
+
+        Der Regex-Match auf 'OK <Code>' entscheidet ueber die Erkennung, NICHT
+        das Vorhandensein eines Pending-Eintrags -- self._pending_pubkey_ack
+        lebt nur im RAM und geht bei jedem Prozess-Neustart verloren. Ohne
+        diese Reihenfolge waere ein durch Neustart/Ablauf verwaister
+        Bestaetigungsversuch fuer den User nicht von einem Tippfehler zu
+        unterscheiden (fiel bisher stillschweigend durch zu 'Unbekannt: OK')."""
         m = _PUBKEY_ACK_RE.match(text.strip())
         if not m:
             return False
 
+        pending = self._pending_pubkey_ack.get(prefix_hex)
+        if not pending:
+            await self._reply(bytes.fromhex(prefix_hex),
+                               "Ups, dein Bestaetigungscode ist nicht mehr gueltig "
+                               "(BBS-Neustart). Sende deine Nachricht (S/SB/...) einfach "
+                               "nochmal, neuer Code kommt automatisch.")
+            return True
+
         if m.group(1) != pending["code"]:
             await self._reply(bytes.fromhex(prefix_hex),
-                               "Falscher Code. Bitte OK <Code> aus der vorherigen "
+                               "PIN falsch. Bitte OK <Code> aus der vorherigen "
                                "Nachricht erneut senden.")
             return True
 

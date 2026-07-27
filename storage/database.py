@@ -647,6 +647,29 @@ class Database:
         )
         return [dict(r) for r in await cursor.fetchall()]
 
+    async def get_feature_usage_daily(self, days: int = 30) -> list[dict]:
+        """Feature-Aufrufe (log_event Typ 'cmd', detail=Feature-Label, siehe
+        _USAGE_LABELS in protocols/meshcore/server.py) je Tag der letzten N Tage –
+        fuer den Verlaufs-Chart in der Statistik."""
+        cursor = await self._db.execute(
+            """SELECT substr(ts, 1, 10) AS day, detail AS feature, COUNT(*) AS n
+               FROM events WHERE type = 'cmd' AND ts >= datetime('now', ?)
+               GROUP BY day, feature ORDER BY day""",
+            (f"-{days} days",),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_feature_usage_totals(self, days: int = 90) -> list[dict]:
+        """Gesamtzahl der Aufrufe je Feature der letzten N Tage (Events werden
+        nach 90 Tagen geloescht, siehe _init_db)."""
+        cursor = await self._db.execute(
+            """SELECT detail AS feature, COUNT(*) AS n
+               FROM events WHERE type = 'cmd' AND ts >= datetime('now', ?)
+               GROUP BY feature ORDER BY n DESC""",
+            (f"-{days} days",),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
     async def get_user_stats(self, days: int = 14) -> list[dict]:
         """Events je User und Typ, plus mittlere ACK-RTT (detail = RTT in ms) und
         SNR-Statistik der rx-Events (Empfangsqualitaet: wie gut kommt der User bei uns an)."""

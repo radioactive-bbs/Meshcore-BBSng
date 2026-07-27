@@ -1768,6 +1768,32 @@ class WebAdminServer(BaseProtocol):
                 f"stroke-linejoin='round' stroke-linecap='round'/>"
                 f"<circle cx='{last_x:.1f}' cy='{last_y:.1f}' r='4' fill='{dot}'/></svg>")
 
+    @staticmethod
+    def _render_count_sparkline(values: list[float]) -> str:
+        """Kompakte Inline-Sparkline fuer Zaehlwerte (z.B. Feature-Aufrufe je Tag) --
+        anders als _render_snr_sparkline ohne Ampelfarbe, da 'mehr Aufrufe' weder
+        gut noch schlecht ist, nur ein neutraler Trend."""
+        if len(values) < 2:
+            return ""
+        w, h, pad = 108, 26, 3
+        lo, hi = min(values), max(values)
+        span = (hi - lo) or 1.0
+        n = len(values)
+
+        def _xy(i: int, v: float) -> tuple[float, float]:
+            x = pad + (w - 2 * pad) * i / (n - 1)
+            y = pad + (h - 2 * pad) * (1 - (v - lo) / span)
+            return x, y
+
+        pts = [_xy(i, v) for i, v in enumerate(values)]
+        path = "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+        last_x, last_y = pts[-1]
+        return (f"<svg width='{w}' height='{h}' viewBox='0 0 {w} {h}' style='display:block' "
+                f"role='img' aria-label='Verlauf, zuletzt {values[-1]:.0f}'>"
+                f"<path d='{path}' fill='none' stroke='#8494a8' stroke-width='2' "
+                f"stroke-linejoin='round' stroke-linecap='round'/>"
+                f"<circle cx='{last_x:.1f}' cy='{last_y:.1f}' r='4' fill='#3987e5'/></svg>")
+
     async def page_stats(self, request: web.Request) -> web.Response:
         try:
             days = max(1, min(int(request.query.get("days", "14")), 90))
@@ -1779,6 +1805,8 @@ class WebAdminServer(BaseProtocol):
         last_snr = await self.db.get_last_snr()
         snr_history = await self.db.get_snr_history(days)
         by_type = await self.db.count_messages_by_type()
+        feature_daily = await self.db.get_feature_usage_daily(days)
+        feature_totals = await self.db.get_feature_usage_totals(days)
 
         # Chart: empfangene Nachrichten pro Tag nach Routing-Art, fest ueber 30 Tage
         route_rows = await self.db.get_daily_route_stats(30, "rx")
@@ -1802,6 +1830,30 @@ class WebAdminServer(BaseProtocol):
         daily_table = (f"<table><tr><th>Tag</th><th>Empfangen</th><th>ACK ✓</th>"
                        f"<th>Kein ACK</th></tr>{drows}</table>"
                        if drows else "<p>Noch keine Ereignisse erfasst.</p>")
+
+        # Feature-Nutzung: welche oeffentlich nutzbaren Befehle (Wetter, Lotto, ...)
+        # wie oft aufgerufen werden -- "Heute" + Gesamt im gewaehlten Zeitraum +
+        # Tagesverlauf als Sparkline. Labels/Zuordnung siehe _USAGE_LABELS in
+        # protocols/meshcore/server.py -- neue Befehle dort eintragen, damit sie
+        # hier automatisch auftauchen.
+        by_feature_day: dict[str, dict[str, int]] = {}
+        for row in feature_daily:
+            by_feature_day.setdefault(row["feature"], {})[row["day"]] = row["n"]
+        today_str = now_utc().date().isoformat()
+        feature_day_list = [(now_utc().date() - timedelta(days=i)).isoformat()
+                            for i in range(days - 1, -1, -1)]
+        frows = []
+        for row in feature_totals:
+            feat = row["feature"]
+            day_counts = by_feature_day.get(feat, {})
+            history = [day_counts.get(d, 0) for d in feature_day_list]
+            spark = (self._render_count_sparkline(history)
+                     or "<span style='color:var(--dim)'>-</span>")
+            frows.append(f"<tr><td>{_esc(feat)}</td><td>{day_counts.get(today_str, 0)}</td>"
+                         f"<td><b>{row['n']}</b></td><td>{spark}</td></tr>")
+        feature_table = (f"<table><tr><th>Feature</th><th>Heute</th>"
+                         f"<th>Gesamt ({days} Tage)</th><th>Verlauf</th></tr>{''.join(frows)}</table>"
+                         if frows else "<p>Noch keine Feature-Aufrufe erfasst.</p>")
 
         # User-Tabelle: rx, ack, noack, Quote, mittlere RTT, SNR (Empfangsqualitaet)
         by_user: dict[str, dict] = {}
@@ -1871,6 +1923,7 @@ class WebAdminServer(BaseProtocol):
         </div>
         <h2>Verlauf</h2>{chart}
         <h2>Aktivitaet je Tag</h2>{daily_table}
+        <h2>Feature-Nutzung</h2>{feature_table}
         <h2>Je User (sortiert nach Aktivitaet)</h2>{user_table}
         <p style="color:var(--dim)">ACK-Quote = bestaetigte / gesendete Antworten. SNR = Signal-
         Rausch-Abstand der empfangenen Pakete (>=0dB komfortabel, -10..0dB grenzwertig, darunter
