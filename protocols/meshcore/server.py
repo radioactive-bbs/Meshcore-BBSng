@@ -1273,6 +1273,8 @@ class MeshCoreServer(BaseProtocol):
             return await self.bbs.cmd_list_users() if feat("userlist") else unknown
         if cmd == "PING":
             return await self._cmd_ping(arg, prefix_hex) if feat("ping") else unknown
+        if cmd == "LOTTO":
+            return await self.bbs.cmd_lotto()
         if cmd in ("PK", "PUBKEY"):
             return await self._cmd_pubkey(arg, prefix_hex)
         if cmd in ("MI", "MEINEINFO"):

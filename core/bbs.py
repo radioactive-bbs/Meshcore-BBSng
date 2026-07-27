@@ -1,5 +1,6 @@
 import logging
-from datetime import datetime
+import random
+from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Optional
 
 from core.message import Message
@@ -412,6 +413,14 @@ class BBSCore:
         if not active_calls:
             return ["Niemand online."]
         return [f"{len(active_calls)} online: " + ", ".join(active_calls)]
+
+    async def cmd_lotto(self) -> list[str]:
+        zahlen = sorted(random.sample(range(1, 50), 6))
+        heute = now_utc()
+        naechster_samstag = heute + timedelta(days=(5 - heute.weekday()) % 7)
+        return [f"Vorschlag Lottozahlen fuer den {naechster_samstag.strftime('%d.%m.%y')}:\n\n"
+                + " - ".join(str(z) for z in zahlen)
+                + "\n\nViel Glueck \U0001F340"]
 
     def _ha_settings(self) -> tuple[str, str, str, object]:
         """(url, token, qth, verify_ssl) aus der Config. verify_ssl: True (Default,
