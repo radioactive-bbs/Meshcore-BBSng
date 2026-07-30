@@ -187,6 +187,34 @@ def _esc(value) -> str:
     return html.escape(str(value if value is not None else ""))
 
 
+def _group_board_threads(msgs: list) -> list:
+    """Sortiert Board-Nachrichten thread-weise: [(Nachricht, ist_antwort,
+    letzte_Thread-Aktivitaet), ...]. Thread-Anfaenge stehen nach Sticky und letzter
+    Aktivitaet, ihre Antworten direkt darunter (aelteste zuerst). Die letzte Aktivitaet
+    wird mitgegeben, weil die Aufbewahrung thread- statt zeilenweise rechnet (siehe
+    Database.purge_old_board_messages) -- die Loesch-Spalte muss dasselbe Datum zeigen.
+    Eine Antwort, deren Thread-Anfang nicht (mehr) existiert, wird selbst wie ein
+    Anfang behandelt -- dieselbe Waisen-Regel wie in der MeshCore-Board-Liste
+    (siehe Database._BOARD_ROOT_COND)."""
+    by_id = {m.id: m for m in msgs}
+    roots, replies = [], {}
+    for m in msgs:
+        if m.thread_id and m.thread_id != m.id and m.thread_id in by_id:
+            replies.setdefault(m.thread_id, []).append(m)
+        else:
+            roots.append(m)
+    for group in replies.values():
+        group.sort(key=lambda m: m.id)
+    last_activity = {r.id: max([r.created_at] + [x.created_at for x in replies.get(r.id, [])])
+                     for r in roots}
+    roots.sort(key=lambda m: (0 if m.sticky else 1, -last_activity[m.id].timestamp()))
+    out = []
+    for root in roots:
+        out.append((root, False, last_activity[root.id]))
+        out += [(r, True, last_activity[root.id]) for r in replies.get(root.id, [])]
+    return out
+
+
 def _fmt_age(seconds: Optional[float]) -> str:
     if seconds is None:
         return "nie"
@@ -1450,8 +1478,7 @@ class WebAdminServer(BaseProtocol):
         days = self._cfg_get(("board", "retention_days")) or 14
         now = now_utc()
 
-        board_msgs = sorted((m for m in msgs if m.msg_type == "B"),
-                            key=lambda m: (0 if m.sticky else 1, -m.id))
+        board_msgs = _group_board_threads([m for m in msgs if m.msg_type == "B"])
         private_msgs = sorted((m for m in msgs if m.msg_type == "P"), key=lambda m: -m.id)
 
         def _tab_link(label: str, key: str, count: int) -> str:
@@ -1465,7 +1492,7 @@ class WebAdminServer(BaseProtocol):
 
         if tab == "board":
             rows = []
-            for m in board_msgs:
+            for m, is_reply, thread_last in board_msgs:
                 pin = "📌" if m.sticky else "📄"   # gleiche Icons wie in der MeshCore-Board-Liste (BL)
                 label = "Loesen" if m.sticky else "Sticky"
                 sticky_cell = (f"""<form class='inline' method='post' action='/messages/sticky'>
@@ -1475,12 +1502,17 @@ class WebAdminServer(BaseProtocol):
                 if m.sticky:
                     expiry_cell = "📌 nie"
                 else:
-                    expires_at = m.created_at + timedelta(days=days)
+                    # Aufbewahrung rechnet ab der letzten Aktivitaet im Thread, nicht ab
+                    # dem Erstelldatum der einzelnen Zeile -- eine neue Antwort verlaengert
+                    # also die Lebensdauer des ganzen Threads.
+                    expires_at = thread_last + timedelta(days=days)
                     remaining = (expires_at - now).days
                     cls = " class='warn'" if remaining <= 1 else ""
                     expiry_cell = (f"<span{cls}>{expires_at.strftime('%d.%m.%y')}</span> "
                                    f"<small>({max(remaining, 0)}d)</small>")
-                content_cell = (f"<details class='msg'><summary>{_esc(m.subject) or '(kein Betreff)'}</summary>"
+                indent = "<span style='color:var(--dim)'>↳</span> " if is_reply else ""
+                content_cell = (f"<details class='msg'><summary>{indent}"
+                               f"{_esc(m.subject) or '(kein Betreff)'}</summary>"
                                f"<pre style='white-space:pre-wrap'>{_esc(m.body)}</pre></details>")
                 rows.append(f"""<tr>
                   <td>{m.id}</td>
@@ -1500,15 +1532,17 @@ class WebAdminServer(BaseProtocol):
             table = (f"<table><tr><th>#</th><th></th><th>Von</th><th>Betreff / Text</th>"
                      f"<th>Datum</th><th>Löschung</th><th>Aufrufe</th><th></th></tr>{''.join(rows)}</table>"
                      if rows else "<p>Keine Board-Nachrichten vorhanden.</p>")
-            top_board = sorted(board_msgs, key=lambda m: -m.views)[:5]
+            top_board = sorted((m for m, _, _ in board_msgs), key=lambda m: -m.views)[:5]
             top_html = ("".join(
                 f"<div class='card'><div class='k'>{_esc(m.subject) or '(kein Betreff)'} "
                 f"<small>#{m.id}</small></div><div class='v'>👁 {m.views}</div></div>"
                 for m in top_board if m.views) or "<p style='color:var(--dim)'>Noch keine Aufrufe erfasst.</p>")
             body = (tab_nav +
                     f"<div class='actions-bar'><a href='/messages/new'><button>+ Neue Board-Nachricht</button></a></div>"
-                    f"<p style='color:var(--dim)'>Board-Nachrichten werden automatisch nach {days} Tagen geloescht "
-                    f"(einstellbar unter <a href='/settings'>Einstellungen</a>). 📌 Sticky-Nachrichten sind davon ausgenommen. "
+                    f"<p style='color:var(--dim)'>Board-Threads werden automatisch {days} Tage nach der "
+                    f"letzten Aktivitaet geloescht – Anfang und Antworten gemeinsam, eine neue Antwort "
+                    f"verlaengert also den ganzen Thread (einstellbar unter <a href='/settings'>Einstellungen</a>). "
+                    f"📌 Sticky-Nachrichten sind davon ausgenommen. ↳ kennzeichnet Antworten. "
                     f"👁 Aufrufe = wie oft die Nachricht per R&lt;Nr&gt; gelesen wurde (ueber alle User summiert).</p>"
                     f"<h2>Meistgelesene Board-Nachrichten</h2><div class='cards'>{top_html}</div>"
                     f"{table}")

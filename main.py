@@ -101,6 +101,28 @@ async def _board_purge_loop(db: Database, config: dict):
 
 UNREAD_WARN_DAYS = 3   # Vorlauf der Loesch-Erinnerung (fix, nicht konfigurierbar)
 
+# Haelt Referenzen auf im Hintergrund laufende Benachrichtigungs-Tasks (siehe
+# _fire_notify) - ohne das haelt nichts den Task am Leben, asyncio darf ihn sonst
+# mitten in der Ausfuehrung einsammeln (dokumentiertes asyncio-Fallstrick).
+_background_notify_tasks: set = set()
+
+
+def _fire_notify(notify_dm, to_call: str, text: str, fail_log_msg: str):
+    """Feuert eine Benachrichtigung im Hintergrund ab, ohne sie abzuwarten. Der
+    DM-Versand ueber den Node ist seriell und dauert pro Empfaenger typischerweise
+    10-30s (bis zu ~90s bei schlechter Verbindung) - mehrere davon in einer Schleife
+    nacheinander abzuwarten wuerde diesen Loop (und damit den naechsten Lauf) unnoetig
+    verzoegern und das globale Node-Sende-Lock lange belegen, waehrend echte User-
+    Befehle in der Zwischenzeit auf ihre Antwort warten."""
+    async def _run():
+        try:
+            await notify_dm(to_call, text)
+        except Exception:
+            logger.warning(fail_log_msg, to_call, exc_info=True)
+    task = asyncio.create_task(_run())
+    _background_notify_tasks.add(task)
+    task.add_done_callback(_background_notify_tasks.discard)
+
 
 async def _unread_message_retention_loop(db: Database, config: dict, notify_dm):
     """Ungelesene private Nachrichten: UNREAD_WARN_DAYS vor Ablauf der
@@ -116,11 +138,8 @@ async def _unread_message_retention_loop(db: Database, config: dict, notify_dm):
                     text = (f"⏰ Nachricht #{msg.id} von {msg.from_call} "
                             f"(\"{msg.subject}\") wird in {UNREAD_WARN_DAYS} Tagen geloescht, "
                             f"falls nicht gelesen. R{msg.id} zum Lesen.")
-                    try:
-                        await notify_dm(msg.to_call, text)
-                    except Exception:
-                        logger.warning("Loesch-Erinnerung an %s fehlgeschlagen", msg.to_call,
-                                       exc_info=True)
+                    _fire_notify(notify_dm, msg.to_call, text,
+                                "Loesch-Erinnerung an %s fehlgeschlagen")
                 await db.mark_warned(msg.id)
             if expiring:
                 logger.info("Loesch-Erinnerung an %d ungelesene Nachricht(en) verschickt",
@@ -162,11 +181,8 @@ async def _inactivity_loop(db: Database, config: dict, notify_dm, meshcore):
                                 f"in {days_left} Tagen automatisch geloescht, falls keine "
                                 f"Aktivitaet erfolgt. Einfach eine Nachricht senden, um aktiv "
                                 f"zu bleiben.")
-                        try:
-                            await notify_dm(c["name"], text)
-                        except Exception:
-                            logger.warning("Inaktivitaets-Hinweis an %s fehlgeschlagen",
-                                           c["name"], exc_info=True)
+                        _fire_notify(notify_dm, c["name"], text,
+                                    "Inaktivitaets-Hinweis an %s fehlgeschlagen")
                     await db.mark_inactivity_warned(c["name"], warn_day)
                 if due:
                     logger.info("Inaktivitaets-Hinweis (%d Tage) an %d User verschickt",

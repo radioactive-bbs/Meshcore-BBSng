@@ -254,32 +254,34 @@
       <div>
         <div class="grp">
           <h4>Menü</h4>
-          <div class="row"><span class="cmd">H / ?</span><span class="desc">Hauptmenü</span></div>
-          <div class="row"><span class="cmd">N</span><span class="desc">Nachrichten</span></div>
-          <div class="row"><span class="cmd">B</span><span class="desc">Board</span></div>
-          <div class="row"><span class="cmd">W</span><span class="desc">Wetter</span></div>
-          <div class="row"><span class="cmd">I</span><span class="desc">Info</span></div>
-          <div class="row"><span class="cmd">A</span><span class="desc">Account</span></div>
+          <div class="row"><span class="cmd">H / ?</span><span class="desc">[H]auptmenü</span></div>
+          <div class="row"><span class="cmd">N</span><span class="desc">[N]achrichten</span></div>
+          <div class="row"><span class="cmd">B</span><span class="desc">[B]oard</span></div>
+          <div class="row"><span class="cmd">W</span><span class="desc">[W]etter</span></div>
+          <div class="row"><span class="cmd">I</span><span class="desc">[I]nfo</span></div>
+          <div class="row"><span class="cmd">A</span><span class="desc">[A]ccount</span></div>
         </div>
         <div class="grp">
           <h4>Nachrichten</h4>
-          <div class="row"><span class="cmd">NL</span><span class="desc">Liste (neueste)</span></div>
+          <div class="row"><span class="cmd">NL</span><span class="desc">[N]achrichten[L]iste (je Thread)</span></div>
           <div class="row"><span class="cmd">NLO&lt;n&gt;</span><span class="desc">weitere ab n</span></div>
+          <div class="row"><span class="cmd">NT&lt;nr&gt;</span><span class="desc">[N]achrichten[T]hread</span></div>
           <div class="row"><span class="cmd">R&lt;nr&gt;</span><span class="desc">Nachricht lesen</span></div>
         </div>
       </div>
       <div>
         <div class="grp">
           <h4>Senden</h4>
-          <div class="row"><span class="cmd">S TO|Betr|Text</span><span class="desc">privat senden</span></div>
+          <div class="row"><span class="cmd">S TO|Betr|Text</span><span class="desc">[S]enden (privat)</span></div>
           <div class="row"><span class="cmd">RS&lt;nr&gt;|Text</span><span class="desc">Antwort (auto TO/Betreff)</span></div>
-          <div class="row"><span class="cmd">SB Thema|Text</span><span class="desc">Bulletin posten</span></div>
-          <div class="row"><span class="cmd">SBR&lt;nr&gt;|Text</span><span class="desc">Antwort auf Bulletin</span></div>
+          <div class="row"><span class="cmd">SB Thema|Text</span><span class="desc">[S]enden [B]ulletin</span></div>
+          <div class="row"><span class="cmd">SBR&lt;nr&gt;|Text</span><span class="desc">Antwort (haengt am Thread)</span></div>
         </div>
         <div class="grp">
           <h4>Board &amp; Löschen</h4>
-          <div class="row"><span class="cmd">BL</span><span class="desc">Board-Liste</span></div>
+          <div class="row"><span class="cmd">BL</span><span class="desc">[B]oard-[L]iste (je Thread)</span></div>
           <div class="row"><span class="cmd">BLO&lt;n&gt;</span><span class="desc">weitere ab n</span></div>
+          <div class="row"><span class="cmd">BT&lt;nr&gt;</span><span class="desc">[B]oard-[T]hread</span></div>
           <div class="row"><span class="cmd">ND&lt;nr&gt; / K&lt;nr&gt;</span><span class="desc">löschen (eigene, Rückfrage)</span></div>
         </div>
       </div>
@@ -305,9 +307,9 @@
         </div>
         <div class="grp">
           <h4>Info</h4>
-          <div class="row"><span class="cmd">SI</span><span class="desc">Sysinfo</span></div>
-          <div class="row"><span class="cmd">O</span><span class="desc">wer online</span></div>
-          <div class="row"><span class="cmd">LU</span><span class="desc">Userliste</span></div>
+          <div class="row"><span class="cmd">SI</span><span class="desc">[S]ys[I]nfo</span></div>
+          <div class="row"><span class="cmd">O</span><span class="desc">[O]nline</span></div>
+          <div class="row"><span class="cmd">LU</span><span class="desc">[L]iste [U]ser</span></div>
           <div class="row"><span class="cmd">PING</span><span class="desc">Repeaterliste</span></div>
           <div class="row"><span class="cmd">PING &lt;Name&gt;</span><span class="desc">Traceroute</span></div>
         </div>
@@ -315,14 +317,14 @@
       <div>
         <div class="grp">
           <h4>Account</h4>
-          <div class="row"><span class="cmd">MI</span><span class="desc">eigene Account-Info</span></div>
-          <div class="row"><span class="cmd">MC &lt;mail&gt;</span><span class="desc">Mailkontakt setzen</span></div>
+          <div class="row"><span class="cmd">MI</span><span class="desc">[M]eine [I]nfo</span></div>
+          <div class="row"><span class="cmd">MC &lt;mail&gt;</span><span class="desc">[M]ail [C]ontact</span></div>
           <div class="row"><span class="cmd">REMOVE</span><span class="desc">abmelden (nur DM, Rückfrage)</span></div>
         </div>
         <div class="grp">
           <h4>Pubkey &amp; Sicherheit</h4>
-          <div class="row"><span class="cmd">PK</span><span class="desc">eigener Pubkey</span></div>
-          <div class="row"><span class="cmd">PK &lt;Name&gt;</span><span class="desc">Pubkey e. Kontakts</span></div>
+          <div class="row"><span class="cmd">PK</span><span class="desc">[P]ub[K]ey (eigener)</span></div>
+          <div class="row"><span class="cmd">PK &lt;Name&gt;</span><span class="desc">[P]ub[K]ey e. Kontakts</span></div>
           <div class="row"><span class="cmd">OK &lt;Code&gt;</span><span class="desc">Sicherheitshinweis bestät.</span></div>
         </div>
       </div>

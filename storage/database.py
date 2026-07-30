@@ -78,6 +78,18 @@ class Database:
         except Exception as exc:
             if "duplicate column" not in str(exc).lower():
                 logger.error("Schema-Migration fehlgeschlagen: %s", exc, exc_info=True)
+        # migration for existing DBs without board_seen_at column (letzter BL-Aufruf,
+        # Basis fuer den Board-Badge im Hauptmenue - siehe get/set_board_seen_at).
+        # NULL = noch nie BL aufgerufen, zaehlt beim Badge bewusst als "alles neu"
+        # statt einer stillen Null (siehe count_board_threads_since).
+        try:
+            await self._db.execute(
+                "ALTER TABLE mc_contacts ADD COLUMN board_seen_at TEXT DEFAULT NULL")
+            await self._db.commit()
+            logger.debug("Schema-Migration: board_seen_at-Spalte hinzugefuegt")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                logger.error("Schema-Migration fehlgeschlagen: %s", exc, exc_info=True)
         # migration for existing DBs without inactivity_warned_days column (comma-Liste
         # bereits verschickter Inaktivitaets-Warnschwellen, z.B. "50,55" - wird bei
         # erneuter Aktivitaet zurueckgesetzt, siehe touch_last_active)
@@ -101,7 +113,8 @@ class Database:
                 read        INTEGER DEFAULT 0,
                 bid         TEXT,
                 sticky      INTEGER DEFAULT 0,
-                views       INTEGER DEFAULT 0
+                views       INTEGER DEFAULT 0,
+                thread_id   INTEGER
             )
         """)
         # migration for existing DBs without sticky column
@@ -128,6 +141,19 @@ class Database:
         except Exception as exc:
             if "duplicate column" not in str(exc).lower():
                 logger.error("Schema-Migration fehlgeschlagen: %s", exc, exc_info=True)
+        # migration for existing DBs without thread_id column (Board-Threads). NULL =
+        # eigenstaendiges Bulletin, d.h. Bestandsdaten werden ohne Datenmigration
+        # automatisch zu Thread-Anfaengen (Thread-Wurzel = COALESCE(thread_id, id),
+        # analog zum COALESCE(sticky, 0)-Muster weiter unten).
+        try:
+            await self._db.execute("ALTER TABLE messages ADD COLUMN thread_id INTEGER")
+            await self._db.commit()
+            logger.debug("Schema-Migration: thread_id-Spalte zu messages hinzugefuegt")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                logger.error("Schema-Migration fehlgeschlagen: %s", exc, exc_info=True)
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(msg_type, thread_id)")
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS events (
                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -210,10 +236,12 @@ class Database:
             subject = crypto.encrypt(subject, self._messages_key)
             body = crypto.encrypt(body, self._messages_key)
         cursor = await self._db.execute(
-            """INSERT INTO messages (msg_type, to_call, from_call, subject, body, created_at, bid, sticky)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO messages (msg_type, to_call, from_call, subject, body, created_at,
+                                     bid, sticky, thread_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (msg.msg_type, msg.to_call.upper(), msg.from_call.upper(),
-             subject, body, msg.created_at.isoformat(), msg.bid, int(msg.sticky)),
+             subject, body, msg.created_at.isoformat(), msg.bid, int(msg.sticky),
+             msg.thread_id),
         )
         await self._db.commit()
         return cursor.lastrowid
@@ -273,27 +301,83 @@ class Database:
     # das Entschluesseln nicht angezeigter Zeilen). COALESCE(sticky, 0), damit
     # eventuelle NULL-sticky-Altzeilen wie nicht-sticky behandelt werden. --------
 
-    async def list_board_sticky(self) -> List[Message]:
-        """Alle angepinnten Board-Nachrichten (immer auf Seite 1), neueste zuerst."""
-        cursor = await self._db.execute(
-            "SELECT * FROM messages WHERE msg_type = 'B' AND COALESCE(sticky, 0) = 1 "
-            "ORDER BY id DESC")
-        return [self._row_to_message(r) for r in await cursor.fetchall()]
+    # Ein Board-Eintrag ist ein Thread-Anfang, wenn er keine Antwort ist (thread_id NULL
+    # oder auf sich selbst) ODER wenn sein Thread-Anfang nicht mehr existiert. Der letzte
+    # Fall faengt Waisen ab: wird ein Thread-Anfang geloescht (K/ND, Web-Admin), sollen
+    # seine Antworten wieder als eigenstaendige Eintraege in der Liste auftauchen statt
+    # unsichtbar zu werden. Dadurch braucht der Loeschpfad selbst keine Sonderlogik.
+    _BOARD_ROOT_COND = ("(m.thread_id IS NULL OR m.thread_id = m.id "
+                        "OR NOT EXISTS (SELECT 1 FROM messages p WHERE p.id = m.thread_id))")
 
-    async def list_board_nonsticky(self, limit: int, offset: int = 0) -> List[Message]:
-        """Eine Seite nicht angepinnter Board-Nachrichten, neueste zuerst."""
+    async def list_board_thread_heads(self, limit: Optional[int] = None, offset: int = 0,
+                                      sticky: bool = False, seen_at: Optional[datetime] = None
+                                      ) -> List[tuple[Message, int, datetime, int]]:
+        """Eine Seite Thread-Anfaenge des Boards als (Nachricht, Antwortzahl, letzte
+        Aktivitaet, Anzahl neu seit seen_at). Sortiert nach letzter Aktivitaet
+        absteigend ("Bump"), damit Threads mit frischen Antworten oben stehen. Alle
+        drei Zusatzwerte kommen als Subselects mit, damit die Liste eine einzige Query
+        bleibt. seen_at=None (noch nie BL aufgerufen) zaehlt jede Nachricht als neu.
+        limit=None liefert alle Treffer (fuer die Sticky-Liste, die nie paginiert wird)."""
+        seen_iso = seen_at.isoformat() if seen_at else None
+        sql = f"""
+            SELECT m.*,
+                   (SELECT COUNT(*) FROM messages r
+                     WHERE r.msg_type = 'B' AND r.thread_id = m.id AND r.id != m.id) AS reply_count,
+                   (SELECT MAX(created_at) FROM messages r2
+                     WHERE r2.msg_type = 'B'
+                       AND (r2.id = m.id OR r2.thread_id = m.id))                     AS last_activity,
+                   (SELECT COUNT(*) FROM messages r3
+                     WHERE r3.msg_type = 'B' AND (r3.id = m.id OR r3.thread_id = m.id)
+                       AND (? IS NULL OR r3.created_at > ?))                          AS new_count
+              FROM messages m
+             WHERE m.msg_type = 'B' AND COALESCE(m.sticky, 0) = ? AND {self._BOARD_ROOT_COND}
+             ORDER BY last_activity DESC, m.id DESC
+             LIMIT ? OFFSET ?"""
         cursor = await self._db.execute(
-            "SELECT * FROM messages WHERE msg_type = 'B' AND COALESCE(sticky, 0) = 0 "
-            "ORDER BY id DESC LIMIT ? OFFSET ?",
-            (limit, offset))
-        return [self._row_to_message(r) for r in await cursor.fetchall()]
+            sql, (seen_iso, seen_iso, int(sticky), -1 if limit is None else limit, offset))
+        return [(self._row_to_message(r), r["reply_count"] or 0,
+                 datetime.fromisoformat(r["last_activity"]), r["new_count"] or 0)
+                for r in await cursor.fetchall()]
 
-    async def count_board_nonsticky(self) -> int:
-        """Anzahl nicht angepinnter Board-Nachrichten (fuer die 'X gesamt'-Fussnote)."""
+    async def count_board_threads(self) -> int:
+        """Anzahl nicht angepinnter Board-Threads (fuer die 'X gesamt'-Fussnote und die
+        Offset-Rechnung) - gezaehlt werden Threads, nicht einzelne Nachrichten."""
         cursor = await self._db.execute(
-            "SELECT COUNT(*) FROM messages WHERE msg_type = 'B' AND COALESCE(sticky, 0) = 0")
+            f"SELECT COUNT(*) FROM messages m WHERE m.msg_type = 'B' "
+            f"AND COALESCE(m.sticky, 0) = 0 AND {self._BOARD_ROOT_COND}")
         row = await cursor.fetchone()
         return row[0] if row else 0
+
+    async def count_board_threads_since(self, seen_at: Optional[str]) -> int:
+        """Anzahl Board-Threads (board-weit, nicht postfach-skaliert) mit Aktivitaet
+        nach seen_at - fuer den Hauptmenue-Badge. seen_at=None (User hat noch nie BL
+        aufgerufen) zaehlt ALLE Threads als neu, statt einer stillen Null."""
+        sql = f"""
+            SELECT COUNT(*) FROM (
+                SELECT m.id,
+                       (SELECT MAX(created_at) FROM messages r2
+                         WHERE r2.msg_type = 'B'
+                           AND (r2.id = m.id OR r2.thread_id = m.id)) AS last_activity
+                  FROM messages m
+                 WHERE m.msg_type = 'B' AND {self._BOARD_ROOT_COND}
+            ) t WHERE ? IS NULL OR t.last_activity > ?"""
+        cursor = await self._db.execute(sql, (seen_at, seen_at))
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def get_thread(self, root_id: int) -> List[Message]:
+        """Thread-Anfang + alle Antworten daran, aelteste zuerst (Lesereihenfolge)."""
+        cursor = await self._db.execute(
+            "SELECT * FROM messages WHERE msg_type = 'B' AND (id = ? OR thread_id = ?) "
+            "ORDER BY id ASC", (root_id, root_id))
+        return [self._row_to_message(r) for r in await cursor.fetchall()]
+
+    async def list_thread_reply_ids(self, root_id: int) -> List[int]:
+        """Nur die IDs der Antworten an root_id (fuer die Fussnote beim Lesen)."""
+        cursor = await self._db.execute(
+            "SELECT id FROM messages WHERE msg_type = 'B' AND thread_id = ? AND id != ? "
+            "ORDER BY id ASC", (root_id, root_id))
+        return [r[0] for r in await cursor.fetchall()]
 
     async def list_personal_page(self, callsign: str, limit: int, offset: int = 0) -> List[Message]:
         """Eine Seite privater Nachrichten im Postfach von callsign, neueste zuerst.
@@ -303,6 +387,72 @@ class Database:
             "ORDER BY id DESC LIMIT ? OFFSET ?",
             (callsign.upper(), limit, offset))
         return [self._row_to_message(r) for r in await cursor.fetchall()]
+
+    # --- Private Threads (analog zu Board-Threads oben, aber Postfach-skaliert:
+    # ein privates Postfach ist gerichtet (to_call), eine Antwort-Kette pingpongt
+    # zwischen zwei Postfaechern hin und her. Der globale Thread-Root ist daher
+    # u.U. gar nicht im eigenen Postfach sichtbar (selbst verschickt statt
+    # empfangen) - "Kopf" einer Thread-Gruppe ist hier pro Postfach die AELTESTE
+    # EIGENE Zeile je COALESCE(thread_id,id)-Gruppe, nicht der globale Root. -----
+
+    async def list_personal_thread_heads(self, callsign: str, limit: int,
+                                         offset: int = 0) -> List[tuple[Message, int, datetime, int]]:
+        """Eine Seite Thread-Koepfe im Postfach von callsign als (Nachricht,
+        Antwortzahl, letzte Aktivitaet, Anzahl ungelesen). Alle Subselects bewusst auf
+        to_call=callsign eingeschraenkt - kein Blick auf Nachrichten, die callsign
+        selbst an andere verschickt hat."""
+        callsign = callsign.upper()
+        sql = """
+            SELECT m.*,
+                   (SELECT COUNT(*) FROM messages r
+                     WHERE r.msg_type = 'P' AND r.to_call = ?
+                       AND COALESCE(r.thread_id, r.id) = COALESCE(m.thread_id, m.id)
+                       AND r.id != m.id)                                    AS reply_count,
+                   (SELECT MAX(created_at) FROM messages r2
+                     WHERE r2.msg_type = 'P' AND r2.to_call = ?
+                       AND COALESCE(r2.thread_id, r2.id) = COALESCE(m.thread_id, m.id)) AS last_activity,
+                   (SELECT COUNT(*) FROM messages r3
+                     WHERE r3.msg_type = 'P' AND r3.to_call = ? AND r3.read = 0
+                       AND COALESCE(r3.thread_id, r3.id) = COALESCE(m.thread_id, m.id)) AS unread_count
+              FROM messages m
+             WHERE m.msg_type = 'P' AND m.to_call = ?
+               AND m.id = (SELECT MIN(id) FROM messages m2
+                            WHERE m2.msg_type = 'P' AND m2.to_call = ?
+                              AND COALESCE(m2.thread_id, m2.id) = COALESCE(m.thread_id, m.id))
+             ORDER BY last_activity DESC
+             LIMIT ? OFFSET ?"""
+        cursor = await self._db.execute(sql, (callsign, callsign, callsign, callsign, callsign,
+                                              limit, offset))
+        return [(self._row_to_message(r), r["reply_count"] or 0,
+                 datetime.fromisoformat(r["last_activity"]), r["unread_count"] or 0)
+                for r in await cursor.fetchall()]
+
+    async def count_personal_threads(self, callsign: str) -> int:
+        """Anzahl Threads im Postfach von callsign (fuer Pagination/Fussnote)."""
+        cursor = await self._db.execute(
+            "SELECT COUNT(DISTINCT COALESCE(thread_id, id)) FROM messages "
+            "WHERE msg_type = 'P' AND to_call = ?", (callsign.upper(),))
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def get_personal_thread(self, callsign: str, root_key: int) -> List[Message]:
+        """Alle Nachrichten im Postfach von callsign, die zur selben Thread-Gruppe
+        wie root_key gehoeren, aelteste zuerst."""
+        cursor = await self._db.execute(
+            "SELECT * FROM messages WHERE msg_type = 'P' AND to_call = ? "
+            "AND COALESCE(thread_id, id) = ? ORDER BY id ASC",
+            (callsign.upper(), root_key))
+        return [self._row_to_message(r) for r in await cursor.fetchall()]
+
+    async def mark_thread_read(self, callsign: str, root_key: int):
+        """Markiert alle Nachrichten einer privaten Thread-Gruppe im Postfach von
+        callsign als gelesen (NT<n> = ganzen Verlauf oeffnen, wie eine
+        Chat-Unterhaltung - R<n> einzeln bleibt zusaetzlich moeglich)."""
+        await self._db.execute(
+            "UPDATE messages SET read = 1, views = views + 1 "
+            "WHERE msg_type = 'P' AND to_call = ? AND COALESCE(thread_id, id) = ?",
+            (callsign.upper(), root_key))
+        await self._db.commit()
 
     async def mark_read(self, msg_id: int):
         """Markiert als gelesen und zaehlt den Aufruf (views) – bei Board-Nachrichten
@@ -321,11 +471,21 @@ class Database:
         await self._db.commit()
 
     async def purge_old_board_messages(self, days: int) -> int:
-        """Loescht Board-Nachrichten (msg_type='B') aelter als N Tage, sticky ausgenommen.
+        """Loescht Board-Threads, deren LETZTE Aktivitaet aelter als N Tage ist -
+        Thread-Anfang und Antworten gemeinsam. Bewusst thread- statt zeilenweise: sonst
+        wuerde der alte Anfang einer noch lebendigen Diskussion geloescht und die Antworten
+        zerfielen (per Waisen-Regel, siehe _BOARD_ROOT_COND) in Einzeleintraege.
+        Ein angepinnter Thread-Anfang schuetzt den kompletten Thread.
         Gibt die Anzahl geloeschter Nachrichten zurueck."""
         cursor = await self._db.execute(
-            "DELETE FROM messages WHERE msg_type = 'B' AND sticky = 0 "
-            "AND created_at < datetime('now', ?)",
+            """DELETE FROM messages WHERE msg_type = 'B' AND COALESCE(thread_id, id) IN (
+                   SELECT COALESCE(thread_id, id) FROM messages
+                    WHERE msg_type = 'B'
+                    GROUP BY COALESCE(thread_id, id)
+                   HAVING MAX(created_at) < datetime('now', ?))
+               AND COALESCE(sticky, 0) = 0
+               AND COALESCE(thread_id, id) NOT IN (
+                   SELECT id FROM messages WHERE msg_type = 'B' AND COALESCE(sticky, 0) = 1)""",
             (f"-{days} days",),
         )
         await self._db.commit()
@@ -428,6 +588,21 @@ class Database:
         await self._db.execute(
             "UPDATE mc_contacts SET pubkey_ack_confirmed = ? WHERE name = ?",
             (int(confirmed), name.upper()),
+        )
+        await self._db.commit()
+
+    async def get_board_seen_at(self, name: str) -> Optional[str]:
+        """Zeitpunkt des letzten BL-Aufrufs von name, None wenn noch nie aufgerufen
+        (oder name nicht registriert) - Basis fuer Board-Badge/Zeilen-Marker."""
+        cursor = await self._db.execute(
+            "SELECT board_seen_at FROM mc_contacts WHERE name = ?", (name.upper(),))
+        row = await cursor.fetchone()
+        return row["board_seen_at"] if row else None
+
+    async def set_board_seen_at(self, name: str, ts: datetime):
+        await self._db.execute(
+            "UPDATE mc_contacts SET board_seen_at = ? WHERE name = ?",
+            (ts.isoformat(), name.upper()),
         )
         await self._db.commit()
 
@@ -752,4 +927,5 @@ class Database:
             bid=row["bid"],
             sticky=bool(row["sticky"]) if row["sticky"] is not None else False,
             views=row["views"] or 0,
+            thread_id=row["thread_id"],
         )

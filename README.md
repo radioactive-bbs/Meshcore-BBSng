@@ -42,19 +42,20 @@ Jede Zeile zeigt Kürzel **und** deutsche Langform (in Klammern) — beide funkt
 
 | Befehl | | Befehl | |
 |---|---|---|---|
-| `H` / `?` | Hauptmenü | `WX` (`WETTER`) / `WX1` (`MORGEN`) / `WX3` (`DREITAGE`) | Wetter: aktuell / morgen / 3 Tage |
-| `N` (`NACHRICHTEN`) · `B` (`BOARD`) · `W` · `I` (`INFO`) · `A` (`ACCOUNT`) | Menüs | `SI` (`SYSINFO`) | Sysinfo |
-| `NL` / `NLO <n>` (`NACHRICHTENLISTE [<n>]`) | Nachrichtenliste / weitere ab `n` | `O` (`ONLINE`) | Wer online |
-| `BL` / `BLO <n>` (`BOARDLISTE [<n>]`) | Board-Liste / weitere ab `n` | `LU` (`USERLISTE`) | Userliste |
+| `H` / `?` | **[H]auptmenü** | `WX` (`WETTER`) / `WX1` (`MORGEN`) / `WX3` (`DREITAGE`) | Wetter: aktuell / morgen / 3 Tage |
+| `N` (`NACHRICHTEN`) · `B` (`BOARD`) · `W` · `I` (`INFO`) · `A` (`ACCOUNT`) | **[N]achrichten** · **[B]oard** · **[W]etter** · **[I]nfo** · **[A]ccount** | `SI` (`SYSINFO`) | **[S]ys[I]nfo** |
+| `NL` / `NLO <n>` (`NACHRICHTENLISTE [<n>]`) | **[N]achrichten[L]iste** / weitere ab `n` | `O` (`ONLINE`) | **[O]nline** |
+| `BL` / `BLO <n>` (`BOARDLISTE [<n>]`) | **[B]oard-[L]iste** (ein Eintrag je Thread) / weitere ab `n` | `LU` (`USERLISTE`) | **[L]iste [U]ser** |
 | `R <nr>` (`LESEN <nr>`) | Nachricht/Board-Eintrag lesen | `PING` / `PING <Name>` | Repeaterliste (max. 15) / Traceroute |
-| `S TO\|Betreff\|Text` (`SENDEN`) | Private Nachricht senden | `PK` / `PK <Name>` (`PUBKEY`) | Eigener / fremder Pubkey |
-| `RS<nr>\|Text` (`ANTWORT<nr>\|Text`) | Antwort (Empfänger/Betreff automatisch) | `MI` (`MEINEINFO`) | Eigene Account-Info |
-| `SB Thema\|Text` (`BULLETIN`) | Board-Bulletin veröffentlichen | `MC <mail>` (`MAIL <mail>`) | Mailkontakt setzen |
-| `SBR<nr>\|Text` (`BULLETINANTWORT<nr>\|Text`) | Antwort auf ein Bulletin (neues Bulletin) | `OK <Code>` | Pubkey-Sicherheitshinweis bestätigen |
-| `ND <nr>` / `K <nr>` (`LOESCHEN <nr>`) | Nachricht/Bulletin löschen (eigene, **mit Rückfrage**) | `add NAME:PUBKEY` | Registrieren (nur Kanal) |
-| | | `REMOVE` | Abmelden (nur Direktnachricht, **mit Rückfrage**) |
+| `S TO\|Betreff\|Text` (`SENDEN`) | **[S]enden** – private Nachricht | `PK` / `PK <Name>` (`PUBKEY`) | **[P]ub[K]ey** – eigener / fremder |
+| `RS<nr>\|Text` (`ANTWORT<nr>\|Text`) | Antwort (Empfänger/Betreff automatisch) | `MI` (`MEINEINFO`) | **[M]eine [I]nfo** |
+| `SB Thema\|Text` (`BULLETIN`) | **[S]enden [B]ulletin** (veröffentlichen) | `MC <mail>` (`MAIL <mail>`) | **[M]ail [C]ontact** setzen |
+| `SBR<nr>\|Text` (`BULLETINANTWORT<nr>\|Text`) | Antwort auf ein Bulletin (hängt am Thread) | `OK <Code>` | Pubkey-Sicherheitshinweis bestätigen |
+| `BT <nr>` (`BOARDTHREAD <nr>`) | **[B]oard-[T]hread** aufklappen (Anfang + Antworten) | `add NAME:PUBKEY` | Registrieren (nur Kanal) |
+| `NT <nr>` (`NACHRICHTENTHREAD <nr>`) | **[N]achrichten[T]hread** – eigener Verlauf, markiert als gelesen | | |
+| `ND <nr>` / `K <nr>` (`LOESCHEN <nr>`) | Nachricht/Bulletin löschen (eigene, **mit Rückfrage**) | `REMOVE` | Abmelden (nur Direktnachricht, **mit Rückfrage**) |
 
-Zahlenargumente bei den **Kürzeln** (`R`, `NLO`, `BLO`, `ND`, `K`, `BL`, `NL`) auch direkt angehängt: `R5` = `R 5`. Bei den deutschen Langformen (`LESEN`, `LOESCHEN`, `BOARDLISTE`, `NACHRICHTENLISTE`, ...) immer mit Leerzeichen: `LESEN 5`. Details, Berechtigungen und Grenzfälle siehe die Tabellen unten.
+Zahlenargumente bei den **Kürzeln** (`R`, `NLO`, `BLO`, `ND`, `K`, `BL`, `NL`, `BT`, `NT`) auch direkt angehängt: `R5` = `R 5`. Bei den deutschen Langformen (`LESEN`, `LOESCHEN`, `BOARDLISTE`, `NACHRICHTENLISTE`, ...) immer mit Leerzeichen: `LESEN 5`. Details, Berechtigungen und Grenzfälle siehe die Tabellen unten.
 
 Zum Ausdrucken gibt es außerdem eine Kreditkarten-große Steckkarten-Version (Vorder-/Rückseite, zum Ausschneiden und Laminieren): [`docs/cheatsheet.html`](docs/cheatsheet.html) im Browser öffnen und drucken (`Drucken → Tatsächliche Größe`).
 
@@ -62,27 +63,29 @@ Zum Ausdrucken gibt es außerdem eine Kreditkarten-große Steckkarten-Version (V
 
 | Befehl | Langform | Bedeutung |
 |---|---|---|
-| `H` / `?` | `HELP` | Hauptmenü |
-| `N` | `NACHRICHTEN` | Nachrichten-Menü |
-| `B` | `BOARD` | Board-Menü |
-| `W` | *(`WETTER` liefert direkt die Daten, siehe unten)* | Wetter-Menü |
-| `I` | `INFO` | Info-Menü |
-| `A` | `ACCOUNT` | Account-Menü |
+| `H` / `?` | `HELP` | **[H]auptmenü** |
+| `N` | `NACHRICHTEN` | **[N]achrichten**-Menü |
+| `B` | `BOARD` | **[B]oard**-Menü |
+| `W` | *(`WETTER` liefert direkt die Daten, siehe unten)* | **[W]etter**-Menü |
+| `I` | `INFO` | **[I]nfo**-Menü |
+| `A` | `ACCOUNT` | **[A]ccount**-Menü |
 
 ### Nachrichten & Board
 
 | Befehl | Langform | Bedeutung |
 |---|---|---|
-| `NL` / `NLO <n>` | `NACHRICHTENLISTE [<n>]` | Eigene Nachrichtenliste (neueste zuerst); mit Zahlenargument weitere ab Position `n`. `NLO` ist eine weiterhin funktionierende Alt-Form, seit `NL` selbst das Zahlenargument entgegennimmt |
-| `BL` / `BLO <n>` | `BOARDLISTE [<n>]` | Board-Liste (Sticky zuerst); mit Zahlenargument weitere ab Position `n`. `BLO` ist ebenso eine weiterhin funktionierende Alt-Form |
+| `NL` / `NLO <n>` | `NACHRICHTENLISTE [<n>]` | Eigene **[N]achrichten[L]iste** (neueste Aktivität zuerst); **ein Eintrag je Thread** mit einer bereits empfangenen Person — Zähler `(gesamt)` hinter dem Betreff, bei ungelesenen Nachrichten `(gesamt/neu)`, z. B. `(5/4)`. Mit Zahlenargument weitere ab Position `n` (gezählt werden Threads). `NLO` ist eine weiterhin funktionierende Alt-Form |
+| `BL` / `BLO <n>` | `BOARDLISTE [<n>]` | **[B]oard-[L]iste** (Sticky zuerst); **ein Eintrag je Thread** — Zähler `(gesamt)` hinter dem Thema, bei Aktivität seit deinem letzten `BL`-Aufruf `(gesamt/neu)`, z. B. `(5/4)`. Datum = letzte Aktivität, Threads mit frischer Antwort stehen oben. Mit Zahlenargument weitere ab Position `n` (gezählt werden Threads). `BLO` ist ebenso eine weiterhin funktionierende Alt-Form |
+| `BT <nr>` | `BOARDTHREAD <nr>` | **[B]oard-[T]hread** `<nr>` aufklappen: Anfang + alle Antworten mit ihren Nummern, danach mit `R <nr>` lesen. `<nr>` darf der Thread-Anfang **oder** eine seiner Antworten sein |
+| `NT <nr>` | `NACHRICHTENTHREAD <nr>` | **[N]achrichten[T]hread** `<nr>` aufklappen: eigener Verlauf mit einer Person, danach mit `R <nr>` lesen oder `RS<nr>\|Text` antworten. Markiert beim Öffnen alle Nachrichten im Thread als gelesen (wie eine Unterhaltung öffnen) — `R <nr>` einzeln bleibt zusätzlich möglich |
 | `R <nr>` | `LESEN <nr>` | Nachricht/Board-Eintrag `<nr>` lesen |
-| `S TO\|Betreff\|Text` | `SENDEN TO\|Betreff\|Text` | Private Nachricht senden. Betreff darf kein `\|` enthalten (wird als Trennzeichen verwendet). Ist `TO` nicht registriert, warnt die Bestätigung explizit statt eine Zustellung vorzutäuschen |
-| `RS<nr>\|Text` | `ANTWORT<nr>\|Text` | Antwort auf empfangene private Nachricht `<nr>` — Empfänger und Betreff (mit „Re: "-Präfix) werden automatisch aus der Original-Nachricht übernommen, nur für den tatsächlichen Empfänger nutzbar |
-| `SB Thema\|Text` | `BULLETIN Thema\|Text` | Board-Nachricht (Bulletin) veröffentlichen. Thema darf kein `\|` enthalten |
-| `SBR<nr>\|Text` | `BULLETINANTWORT<nr>\|Text` | Antwort auf ein Board-Bulletin `<nr>` als neues Bulletin (Thema mit „Re: "-Präfix) |
+| `S TO\|Betreff\|Text` | `SENDEN TO\|Betreff\|Text` | **[S]enden** – private Nachricht. Betreff darf kein `\|` enthalten (wird als Trennzeichen verwendet). Ist `TO` nicht registriert, warnt die Bestätigung explizit statt eine Zustellung vorzutäuschen |
+| `RS<nr>\|Text` | `ANTWORT<nr>\|Text` | Antwort auf empfangene private Nachricht `<nr>` — Empfänger und Betreff (mit „Re: "-Präfix) werden automatisch aus der Original-Nachricht übernommen, nur für den tatsächlichen Empfänger nutzbar. Hängt am selben Thread wie die Originalnachricht (in `NL`/`NT` sichtbar) |
+| `SB Thema\|Text` | `BULLETIN Thema\|Text` | **[S]enden [B]ulletin** (Board-Nachricht veröffentlichen). Thema darf kein `\|` enthalten |
+| `SBR<nr>\|Text` | `BULLETINANTWORT<nr>\|Text` | Antwort auf ein Board-Bulletin `<nr>`. Die Antwort hängt am Thread und erscheint in `BL` als Zähler beim Thread-Anfang statt als eigene Zeile; das Thema (mit „Re: "-Präfix) kommt automatisch vom Thread-Anfang. Antwort auf eine Antwort landet im selben Thread — bewusst nur eine Ebene. **Alle bisherigen Teilnehmer** des Threads (nicht nur der Autor des Anfangs) bekommen die Antwort zusätzlich als Direktnachricht |
 | `ND <nr>` / `K <nr>` | `LOESCHEN <nr>` | Nachricht `<nr>` löschen — bei privaten Nachrichten nur der Empfänger, bei Board-Bulletins nur der Autor, zusätzlich immer der SysOp und die konfigurierten Co-SysOps. **Erfordert Bestätigung:** derselbe Befehl muss innerhalb von 60 Sekunden erneut gesendet werden, sonst wird nur nachgefragt und nichts gelöscht |
 
-Befehle mit Zahlenargument bei den Kürzeln (`R`, `NLO`, `BLO`, `ND`, `K`, `BL`, `NL`) akzeptieren die Nummer wahlweise mit Leerzeichen (`R 5`) oder direkt angehängt (`R5`). Die deutschen Langformen (`LESEN`, `LOESCHEN`, `BOARDLISTE`, `NACHRICHTENLISTE`) benötigen immer ein Leerzeichen (`LESEN 5`).
+Befehle mit Zahlenargument bei den Kürzeln (`R`, `NLO`, `BLO`, `ND`, `K`, `BL`, `NL`, `BT`, `NT`) akzeptieren die Nummer wahlweise mit Leerzeichen (`R 5`) oder direkt angehängt (`R5`). Die deutschen Langformen (`LESEN`, `LOESCHEN`, `BOARDLISTE`, `BOARDTHREAD`, `NACHRICHTENLISTE`, `NACHRICHTENTHREAD`) benötigen immer ein Leerzeichen (`LESEN 5`).
 
 ### Wetter (Home-Assistant-Integration)
 
@@ -96,15 +99,15 @@ Befehle mit Zahlenargument bei den Kürzeln (`R`, `NLO`, `BLO`, `ND`, `K`, `BL`,
 
 | Befehl | Langform | Bedeutung |
 |---|---|---|
-| `SI` | `SYSINFO` | Sysinfo (Nutzerzahl, Nachrichten, aktive Sessions) |
-| `O` | `ONLINE` | Wer ist gerade online/aktiv |
-| `LU` | `USERLISTE` | Liste aller registrierten Nutzer |
+| `SI` | `SYSINFO` | **[S]ys[I]nfo** (Nutzerzahl, Nachrichten, aktive Sessions) |
+| `O` | `ONLINE` | **[O]nline** – wer ist gerade aktiv |
+| `LU` | `USERLISTE` | **[L]iste** **[U]ser** – alle registrierten Nutzer |
 | `PING` | – | Liste bekannter Repeater (max. 15 auf einmal, mit Hinweis auf `PING <Teilname>` bei mehr) |
 | `PING <Name>` | – | Traceroute zu einem Node/Repeater — Pfad, Laufzeit, SNR je Hop |
-| `PK` | `PUBKEY` | Eigener voller Pubkey (64 Hex), zur Weitergabe an andere |
-| `PK <Name>` | `PUBKEY <Name>` | Voller Pubkey (64 Hex) eines Kontakts — vor dem Senden abgleichen, da Namen fälschbar/duplizierbar sind |
-| `MI` | `MEINEINFO` | Eigene Account-Info |
-| `MC <mail>` | `MAIL <mail>` | Mail-Kontaktadresse hinterlegen, z. B. `MC name@example.com` |
+| `PK` | `PUBKEY` | **[P]ub[K]ey** (eigener, 64 Hex) – zur Weitergabe an andere |
+| `PK <Name>` | `PUBKEY <Name>` | **[P]ub[K]ey** eines Kontakts (64 Hex) — vor dem Senden abgleichen, da Namen fälschbar/duplizierbar sind |
+| `MI` | `MEINEINFO` | **[M]eine [I]nfo** (Account-Status) |
+| `MC <mail>` | `MAIL <mail>` | **[M]ail [C]ontact** hinterlegen, z. B. `MC name@example.com` |
 | `REMOVE` | – | Eigene Registrierung löschen (nur per Direktnachricht). **Erfordert Bestätigung:** `REMOVE` muss innerhalb von 2 Minuten ein zweites Mal gesendet werden, sonst erfolgt nur ein Warnhinweis und nichts wird gelöscht |
 
 ### Pubkey-Sicherheitshinweis (einmalig pro User)
@@ -197,7 +200,7 @@ Wichtige Optionen in `config/config.yaml` (Details/Kommentare direkt in der Date
 | `web` | `enabled`, `host`, `port`, `tls.*` (HTTPS-Zertifikat) |
 | `meshcore` | `serial_port`, `baud_rate`, `channel`, `channel_name`, `channel_region`, `tx_power`, `path_hash_mode`, `contacts` |
 | `storage` | `path` (SQLite-Datei) |
-| `board` | `retention_days` |
+| `board` | `retention_days` (Aufbewahrung; gerechnet ab der **letzten Aktivität im Thread**, Anfang und Antworten werden gemeinsam gelöscht — Sticky ausgenommen) |
 | `messages` | `max_personal` (Postfach-Limit), `unread_retention_days` (Löschfrist ungelesener Nachrichten, Erinnerung 3 Tage vorher) |
 | `registration` | `mode` (`challenge`/`open`/`sysop_approval`, siehe [Self-Service-Registrierung](#self-service-registrierung-nur-meshcore-kanal)) |
 | `users` | `inactivity_days` (automatische Entfernung nach N Tagen Inaktivität), `inactivity_warn_before_days` (bis zu 3 Warn-DMs, Tage vor der Entfernung), `delete_sent_private_messages`/`delete_sent_board_messages` (gesendete Nachrichten bzw. Bulletins bei Entfernung getrennt mitlöschen) |

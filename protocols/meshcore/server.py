@@ -77,7 +77,7 @@ NODE_TIMEOUT    = 600   # Sekunden bis Node als "offline" gilt
 # deutschsprachigen Langform-Aliase (LESEN, LOESCHEN, BOARDLISTE,
 # NACHRICHTENLISTE, ...) bekommen bewusst KEINE Attached-Digit-Bequemlichkeit --
 # "LESEN5" waere unhandlich, wer die Langform braucht tippt ohnehin mit Leerzeichen.
-_NUMERIC_ARG_CMDS = {"R", "K", "ND", "BLO", "NLO", "BL", "NL"}
+_NUMERIC_ARG_CMDS = {"R", "K", "ND", "BLO", "NLO", "BL", "NL", "BT", "NT"}
 
 # Feature-Nutzungsstatistik (Web-Admin: Statistik-Seite) -- jeder erkannte
 # Befehl wird beim Dispatch als events-Zeile (type='cmd', detail=Label) geloggt,
@@ -91,8 +91,10 @@ _USAGE_LABELS = {
     "WX3": "Wetter", "DREITAGE": "Wetter",
     "N": "Nachrichten", "NACHRICHTEN": "Nachrichten",
     "NL": "Nachrichtenliste", "NLO": "Nachrichtenliste", "NACHRICHTENLISTE": "Nachrichtenliste",
+    "NT": "Nachrichtenthread", "NACHRICHTENTHREAD": "Nachrichtenthread",
     "B": "Board", "BOARD": "Board",
     "BL": "Boardliste", "BLO": "Boardliste", "BOARDLISTE": "Boardliste",
+    "BT": "Boardthread", "BOARDTHREAD": "Boardthread",
     "L": "Liste",
     "R": "Lesen", "LESEN": "Lesen",
     "S": "Senden", "SP": "Senden", "SENDEN": "Senden",
@@ -101,7 +103,7 @@ _USAGE_LABELS = {
     "I": "Info", "INFO": "Info",
     "A": "Account", "ACCOUNT": "Account",
     "MI": "Meine Info", "MEINEINFO": "Meine Info",
-    "MC": "Mail setzen", "MAIL": "Mail setzen",
+    "MC": "Mail Contact", "MAIL": "Mail Contact",
     "SI": "Sysinfo", "SYSINFO": "Sysinfo",
     "O": "Online", "ONLINE": "Online",
     "LU": "Userliste", "USERLISTE": "Userliste",
@@ -1192,14 +1194,19 @@ class MeshCoreServer(BaseProtocol):
           WX/WETTER  Wetter      WX1/MORGEN  morgen      WX3/DREITAGE  3 Tage
           SI/SYSINFO  Sysinfo    O/ONLINE  Online        LU/USERLISTE  Userliste
           PK/PUBKEY  eigener Pubkey (voll)   PK/PUBKEY <Name>  Pubkey eines Kontakts
-          BL/BLO/BOARDLISTE [<n>]  Board-Liste (mit optionalem Offset fuer Folgeseiten)
+          BL/BLO/BOARDLISTE [<n>]  Board-Liste, ein Eintrag je Thread mit Antwortzaehler
+                     (mit optionalem Offset fuer Folgeseiten)
+          BT<n>/BOARDTHREAD <n>  Thread <n> aufklappen (Anfang + Antworten); <n> darf
+                     der Thread-Anfang oder eine seiner Antworten sein
           NL/NLO/NACHRICHTENLISTE [<n>]  Nachrichten-Liste (dito)
+          NT<n>/NACHRICHTENTHREAD <n>  Verlauf zu Thread <n> zeigen und als
+                     gelesen markieren
           R<n>/LESEN <n>  Lesen
           S/SP/SENDEN CALL|Betr|Text     SB/BULLETIN Thema|Text
           RS<n>|Text / ANTWORT<n>|Text  Antwort auf empfangene private Nachricht <n>
                      (Empfaenger/Betreff automatisch)
           SBR<n>|Text / BULLETINANTWORT<n>|Text  Antwort auf Board-Bulletin <n>
-                     (als neues Bulletin)
+                     (haengt am Thread, Thema automatisch)
           K<n>/ND<n>/LOESCHEN <n>  Loeschen (nur eigene: erhaltene Nachrichten bzw.
                      eigene Bulletins, erfordert Bestaetigung durch erneutes Senden)
           MI/MEINEINFO  Meine Info   MC/MAIL mail   REMOVE Abmelden
@@ -1336,10 +1343,18 @@ class MeshCoreServer(BaseProtocol):
             if not feat("board"):
                 return unknown
             if not arg:
-                return await self.bbs.cmd_list_board()
+                return await self.bbs.cmd_list_board(callsign)
             if not arg.isdigit():
                 return ["Format: BOARDLISTE <Zahl> (oder BL <Zahl> / BLO <Zahl>)"]
-            return await self.bbs.cmd_list_board(int(arg))
+            return await self.bbs.cmd_list_board(callsign, int(arg))
+        if cmd in ("BT", "BOARDTHREAD"):
+            # Zeigt einen Board-Thread (Anfang + Antworten). Rein lesend, daher kein
+            # _pubkey_ack_gate wie bei SB/SBR.
+            if not feat("board"):
+                return unknown
+            if not arg.isdigit():
+                return ["Format: BOARDTHREAD <Nummer> (oder BT <Nummer>)"]
+            return await self.bbs.cmd_board_thread(int(arg))
         if cmd in ("NL", "NLO", "NACHRICHTENLISTE"):
             if not feat("messages"):
                 return unknown
@@ -1348,6 +1363,15 @@ class MeshCoreServer(BaseProtocol):
             if not arg.isdigit():
                 return ["Format: NACHRICHTENLISTE <Zahl> (oder NL <Zahl> / NLO <Zahl>)"]
             return await self.bbs.cmd_list_personal(callsign, int(arg))
+        if cmd in ("NT", "NACHRICHTENTHREAD"):
+            # Zeigt den Verlauf einer privaten Thread-Gruppe (eigener Empfang) und
+            # markiert ihn komplett als gelesen. Rein empfaenger-geschuetzt (siehe
+            # cmd_personal_thread), daher kein _pubkey_ack_gate wie bei S/RS.
+            if not feat("messages"):
+                return unknown
+            if not arg.isdigit():
+                return ["Format: NACHRICHTENTHREAD <Nummer> (oder NT <Nummer>)"]
+            return await self.bbs.cmd_personal_thread(callsign, int(arg))
         if cmd in ("R", "LESEN"):
             if not msgs_or_board:
                 return unknown
@@ -1629,9 +1653,11 @@ class MeshCoreServer(BaseProtocol):
                         username, pubkey_hex[:12])
             sysop_call = self.config.get("sysop", "")
             if sysop_call:
-                await self.sysop_dm(
+                # Nicht abgewartet: der DM-Versand ist seriell und wuerde die
+                # Registrierung des Users unnoetig verzoegern.
+                self._create_tracked_task(self.sysop_dm(
                     sysop_call,
-                    f"Neuer User registriert (Modus: open): {username} (Pubkey {pubkey_hex[:12]}...)")
+                    f"Neuer User registriert (Modus: open): {username} (Pubkey {pubkey_hex[:12]}...)"))
 
         elif mode == "sysop_approval":
             await self._reply_channel(
@@ -1642,10 +1668,10 @@ class MeshCoreServer(BaseProtocol):
                         username, pubkey_hex[:12])
             sysop_call = self.config.get("sysop", "")
             if sysop_call:
-                await self.sysop_dm(
+                self._create_tracked_task(self.sysop_dm(
                     sysop_call,
                     f"Neue Registrierungsanfrage: {username} (Pubkey {pubkey_hex[:12]}...) "
-                    f"wartet im Web-Admin -> Benutzer auf Freischaltung.")
+                    f"wartet im Web-Admin -> Benutzer auf Freischaltung."))
 
         else:  # mode == "challenge" (Default/Status quo)
             await self._reply_channel(
@@ -1742,9 +1768,9 @@ class MeshCoreServer(BaseProtocol):
 
         sysop_call = self.config.get("sysop", "")
         if sysop_call:
-            await self.sysop_dm(
+            self._create_tracked_task(self.sysop_dm(
                 sysop_call,
-                f"Neuer User registriert: {username} (Pubkey {pubkey_hex[:12]}...)")
+                f"Neuer User registriert: {username} (Pubkey {pubkey_hex[:12]}...)"))
         return True
 
     # ------------------------------------------------------------------

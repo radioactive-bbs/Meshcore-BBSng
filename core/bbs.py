@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import random
 from datetime import datetime, timedelta
@@ -39,6 +40,10 @@ class BBSCore:
     # Schritten (z.B. BLO 10 -> Eintraege 10-19, BLO 20 -> 20-29).
     FIRST_PAGE = 9
     PAGE_SIZE = 10
+    # Zeilen, die BT<n> maximal ausgibt. Der MeshCore-Chunker sendet hoechstens
+    # max_chunks (Default 5) Pakete a ~150 Byte mit chunk_delay Sekunden Abstand --
+    # ein langer Thread wuerde die Ausgabe sonst abschneiden bzw. den Kanal blockieren.
+    THREAD_MAX_ROWS = 10
     DEFAULT_MAX_PERSONAL_MESSAGES = 30   # Fallback falls messages.max_personal nicht konfiguriert ist
 
     def __init__(self, db: Database, config: dict, notify_dm: Optional[NotifyDM] = None):
@@ -48,6 +53,10 @@ class BBSCore:
         # Loesch-Erinnerung). None, wenn kein Protokoll mit Push-Faehigkeit (MeshCore)
         # verfuegbar ist - Feature bleibt dann einfach inaktiv, kein Fehler.
         self._notify_dm = notify_dm
+        # Referenzen auf im Hintergrund laufende Benachrichtigungs-Tasks (siehe
+        # _fire_notify) - ohne das haelt nichts den Task am Leben, asyncio darf ihn
+        # sonst mitten in der Ausfuehrung einsammeln (dokumentiertes asyncio-Fallstrick).
+        self._background_tasks: set = set()
 
     async def _try_notify(self, to_call: str, text: str):
         """Best-effort-Benachrichtigung: Fehler/fehlender Callback duerfen den
@@ -58,6 +67,18 @@ class BBSCore:
             await self._notify_dm(to_call, text)
         except Exception:
             logger.warning("Benachrichtigung an %s fehlgeschlagen", to_call, exc_info=True)
+
+    def _fire_notify(self, to_call: str, text: str):
+        """Wie _try_notify, aber nicht abgewartet: der eigentliche DM-Versand ist
+        ueber den Node seriell und dauert pro Empfaenger typischerweise 10-30s (bis
+        zu ~90s bei schlechter Verbindung, siehe CONFIRM_CAP in server.py). Wuerde
+        cmd_bulletin_reply mehrere Benachrichtigungen NACHEINANDER abwarten, haengt
+        die Befehlsantwort (und damit das ganze BBS fuer alle User, da der Node-Send
+        global serialisiert ist) minutenlang. Die Benachrichtigungen laufen daher im
+        Hintergrund weiter, waehrend der Befehl selbst sofort zurueckkehrt."""
+        task = asyncio.create_task(self._try_notify(to_call, text))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     def feature_enabled(self, key: str) -> bool:
         """Liest Feature-Flags live aus der Config (Web-UI schaltet ohne Neustart)."""
@@ -76,8 +97,19 @@ class BBSCore:
         return any(self.feature_enabled(k) for k in ("sysinfo", "online", "userlist", "ping"))
 
     # ------------------------------------------------------------------
-    # Menüs (jedes als einzelner String ≤ 150 Byte UTF-8, Firmware-Paketlimit)
-    # Nur aktivierte Funktionen werden angezeigt.
+    # Menüs. Nur aktivierte Funktionen werden angezeigt. Werden ueber mehrere
+    # ~150-Byte-Chunks gesendet, falls noetig (siehe MeshCoreServer._chunk) -
+    # kein Byte-Limit auf Gesamtlaenge, aber jeder zusaetzliche Chunk kostet
+    # chunk_delay Sekunden mehr Airtime, daher trotzdem kompakt halten.
+    #
+    # Kurzbefehl-Notation [X]wort: der Buchstabe in Klammern zeigt, welcher
+    # Buchstabe des folgenden Wortes der Shortcut ist (z.B. [N]achrichten = N).
+    # Nur wo das Kuerzel tatsaechlich aus dem deutschen Wort stammt - mehrere
+    # Kuerzel sind klassischer Packet-Radio-BBS-Jargon (englisch) und passen
+    # NICHT zum deutschen Anzeigetext, bleiben daher bewusst unmarkiert:
+    # R (= "Read") -> Lesen, K/ND (= "Kill"/"No Deliver") -> Loeschen,
+    # SP (= "Send Personal"), RS/SBR (= "Reply-Send") -> Antwort,
+    # WX/WX1/WX3 (= engl. Wetter-Jargon) -> Wetter/Morgen/Dreitage.
     # ------------------------------------------------------------------
 
     async def cmd_help(self, callsign: str = "") -> list[str]:
@@ -91,15 +123,21 @@ class BBSCore:
                 unread = await self.db.count_unread_personal(callsign)
                 if unread:
                     badge = f" ({unread} neu)"
-            lines.append(f"\U0001f4e8 N  Nachrichten{badge}")
+            lines.append(f"\U0001f4e8 [N]achrichten{badge}")
         if self.feature_enabled("board"):
-            lines.append("\U0001f4cb B  Board")
+            badge = ""
+            if callsign:
+                seen = await self.db.get_board_seen_at(callsign)
+                new_threads = await self.db.count_board_threads_since(seen)
+                if new_threads:
+                    badge = f" ({new_threads} neu)"
+            lines.append(f"\U0001f4cb [B]oard{badge}")
         if self.feature_enabled("weather"):
-            lines.append("⛅ W  Wetter")
+            lines.append("⛅ [W]etter")
         if self._any_info_feature():
-            lines.append("ℹ  I  Info")
+            lines.append("\U0001f4d8 [I]nfo")
         if self.feature_enabled("account"):
-            lines.append("\U0001f464 A  Account")
+            lines.append("\U0001f464 [A]ccount")
         result = ["\n".join(lines)]
         motd = str(self.config.get("motd", "") or "").strip()
         if motd:
@@ -111,24 +149,28 @@ class BBSCore:
         count = await self.db.count_personal_messages(callsign) if callsign else 0
         return ["\n".join([
             f"\U0001f4e8 Nachrichten {count}/{self.max_personal_messages}",
-            "\U0001f4cb NL Liste  \U0001f4d6 R<n> Lesen",
-            "✉ S TO|Betr|Text",
+            "\U0001f4cb [N]achrichten[L]iste",
+            "\U0001f4d6 R<n> Lesen",
+            "\U0001f4d1 [N]achrichten[T]hread <n> (Verlauf, markiert gelesen)",
+            "✉ [S]enden TO|Betr|Text",
             "\U0001f5d1 ND<n> Loeschen (nur eigene erhaltene)  \U0001f4e1 H Main",
-            "Auch: NACHRICHTENLISTE, LESEN, SENDEN, LOESCHEN",
+            "Auch: NACHRICHTENLISTE, NACHRICHTENTHREAD, LESEN, SENDEN, LOESCHEN",
         ])]
 
     async def menu_board(self) -> list[str]:
         return ["\n".join([
             "\U0001f4cb Board",
-            "\U0001f4cb BL Liste  \U0001f4d6 R<n> Lesen",
-            "\U0001f4dd SB Thema|Text  SBR<n>|Text Antwort",
+            "\U0001f4cb [B]oard[L]iste",
+            "\U0001f4d6 R<n> Lesen",
+            "\U0001f4d1 [B]oard[T]hread <n> (Antworten anzeigen)",
+            "\U0001f4dd [S]enden [B]ulletin Thema|Text  SBR<n>|Text Antwort",
             "\U0001f5d1 ND<n> Loeschen (nur eigene Bulletins)  \U0001f4e1 H  BBS-Main",
-            "Auch: BOARDLISTE, BULLETIN, BULLETINANTWORT, LOESCHEN",
+            "Auch: BOARDLISTE, BOARDTHREAD, BULLETIN, BULLETINANTWORT, LOESCHEN",
         ])]
 
     async def menu_weather(self) -> list[str]:
         return ["\n".join([
-            "⛅ Wetter",
+            "⛅ [W]etter",
             "⛅ WX   Aktuell",
             "\U0001f324 WX1  Morgen",
             "\U0001f4c5 WX3  3 Tage",
@@ -137,17 +179,17 @@ class BBSCore:
         ])]
 
     async def menu_info(self) -> list[str]:
-        lines = ["ℹ Info"]
+        lines = ["\U0001f4d8 Info"]
         if self.feature_enabled("sysinfo"):
-            lines.append("ℹ SI  Sysinfo")
+            lines.append("\U0001f4d8 [S]ys[I]nfo")
         if self.feature_enabled("online"):
-            lines.append("\U0001f465 O  Online")
+            lines.append("\U0001f465 [O]nline")
         if self.feature_enabled("userlist"):
-            lines.append("\U0001f465 LU  Liste User")
+            lines.append("\U0001f465 [L]iste [U]ser")
         if self.feature_enabled("ping"):
             lines.append("\U0001f4e1 PING  Repeaterliste")
             lines.append("\U0001f4e1 PING <Name>  Node-Ping")
-        lines.append("\U0001f511 PK <Name>  voller Pubkey (PK = eigener)")
+        lines.append("\U0001f511 [P]ub[K]ey <Name> (ohne Name: eigener)")
         lines.append("\U0001f4e1 H  BBS-Main")
         lines.append("Auch: SYSINFO, ONLINE, USERLISTE, PUBKEY")
         return ["\n".join(lines)]
@@ -155,8 +197,8 @@ class BBSCore:
     async def menu_account(self) -> list[str]:
         return ["\n".join([
             "\U0001f464 Account",
-            "\U0001f464 MI  Meine Info",
-            "\U0001f4e7 MC  Mailkontakt",
+            "\U0001f464 [M]eine [I]nfo",
+            "\U0001f4e7 [M]ail [C]ontact",
             "\U0001f6aa REMOVE  Abmelden",
             "\U0001f4e1 H  BBS-Main",
             "Auch: MEINEINFO, MAIL",
@@ -185,22 +227,34 @@ class BBSCore:
         uebernommen)."""
         return ["BL/BOARDLISTE = Board Liste, NL/NACHRICHTENLISTE = Nachrichten Liste"]
 
-    async def cmd_list_board(self, offset: Optional[int] = None) -> list[str]:
+    async def cmd_list_board(self, callsign: str = "", offset: Optional[int] = None) -> list[str]:
         # SQL-seitig gefiltert/paginiert statt die ganze Tabelle zu laden: Board-
         # Nachrichten fassen 'P'-Zeilen gar nicht mehr an (kein Entschluesseln
         # fremder Postfaecher). Sticky bleibt aus der Offset-Paginierung ausgenommen
         # und nur auf Seite 1 sichtbar -- daher getrennte Queries statt LIMIT/OFFSET.
-        total_other = await self.db.count_board_nonsticky()
+        # Gelistet werden nur Thread-Anfaenge (mit Antwortzaehler); die Antworten
+        # selbst zeigt BT<Nr>. Das haelt die Liste kurz - jede Zeile kostet Airtime.
+        callsign = callsign.upper()
+        # Alten Stand VOR dem Rendern lesen, damit die Zeilen-Markierung noch den
+        # Stand vor diesem Aufruf zeigt - danach wird board_seen_at aktualisiert,
+        # das raeumt sowohl die Zeilen-Marker als auch den Hauptmenue-Badge auf
+        # (jeder BL-Aufruf gilt als "Board angesehen", unabhaengig von R<n>).
+        old_seen = await self.db.get_board_seen_at(callsign) if callsign else None
+        old_seen_dt = datetime.fromisoformat(old_seen) if old_seen else None
+        total_other = await self.db.count_board_threads()
         if offset is None:
-            sticky_msgs = await self.db.list_board_sticky()
-            page = sticky_msgs + await self.db.list_board_nonsticky(self.FIRST_PAGE, 0)
+            sticky_heads = await self.db.list_board_thread_heads(sticky=True, seen_at=old_seen_dt)
+            page = sticky_heads + await self.db.list_board_thread_heads(
+                self.FIRST_PAGE, 0, seen_at=old_seen_dt)
         else:
-            # offset ist 1-basiert (BLO 10 -> Nachricht Nr. 10 der Liste, lueckenlos
+            # offset ist 1-basiert (BLO 10 -> Thread Nr. 10 der Liste, lueckenlos
             # anschliessend an die "juengsten 9" der ersten Seite).
             start = max(offset - 1, 0)
-            page = await self.db.list_board_nonsticky(self.PAGE_SIZE, start)
+            page = await self.db.list_board_thread_heads(self.PAGE_SIZE, start, seen_at=old_seen_dt)
 
         if not page:
+            if callsign:
+                await self.db.set_board_seen_at(callsign, now_utc())
             return ["Keine Board-Nachrichten." if offset is None
                     else f"Keine weiteren Board-Nachrichten ab {offset}."]
 
@@ -212,43 +266,135 @@ class BBSCore:
         # breit dargestellt - so bleiben sticky/nicht-sticky Zeilen untereinander
         # ausgerichtet, auch wenn beide etwas breiter sind als die Kopfzeile.
         lines.append(f"{'Nr':<3} {'Sticky':<6} {'Datum':<8} {'Von':<9} Betreff")
-        for m in page:
+        for m, replies, last_activity, new_count in page:
             pin = "\U0001f4cc" if m.sticky else "\U0001f4c4"   # 📌 sticky / 📄 nicht sticky
-            date = m.created_at.strftime("%d.%m.%y")
-            subject = m.subject if len(m.subject) <= 15 else m.subject[:15] + "..."
+            # Datum = letzte Aktivitaet im Thread, nicht Erstelldatum: nur so ist die
+            # Sortierung (Thread mit frischer Antwort steht oben) nachvollziehbar.
+            date = last_activity.strftime("%d.%m.%y")
+            total = replies + 1
+            suffix = self._count_suffix(total, new_count if callsign else 0)
+            # Bei Zaehler-Suffix frueher kuerzen, damit die Zeile so breit bleibt wie ohne.
+            cut = 11 if suffix else 15
+            subject = m.subject if len(m.subject) <= cut else m.subject[:cut] + "..."
+            subject += suffix
             lines.append(f"{m.id:>3} {pin:<6} {date:<8} {m.from_call:<9} {subject}")
+        if any(replies for _, replies, _, _ in page):
+            lines.append("BT<Nr> zeigt die Antworten")
         if offset is None and total_other > self.FIRST_PAGE:
             lines.append(f"BL {self.FIRST_PAGE + 1} fuer weitere ({total_other} gesamt)")
         elif offset is not None and total_other > start + self.PAGE_SIZE:
             lines.append(f"BL {offset + self.PAGE_SIZE} fuer weitere ({total_other} gesamt)")
+        if callsign:
+            await self.db.set_board_seen_at(callsign, now_utc())
         return lines
+
+    @staticmethod
+    def _count_suffix(total: int, new: int) -> str:
+        """Zaehler-Suffix fuer Thread-Listen (BL/NL): '(gesamt/neu)' wenn es etwas
+        Neues gibt (auch bei nur 1 Nachricht - ein frischer Einzel-Thread zaehlt),
+        sonst nur '(gesamt)' wenn mehr als eine Nachricht im Thread steckt, sonst
+        gar nichts (Standardfall: gelesen, keine Antworten)."""
+        if new:
+            return f" ({total}/{new})"
+        if total > 1:
+            return f" ({total})"
+        return ""
+
+    async def cmd_board_thread(self, msg_id: int) -> list[str]:
+        """Zeigt einen Board-Thread: Anfang + alle Antworten daran. msg_id darf der
+        Thread-Anfang ODER eine seiner Antworten sein (aus BL kommt die Anfangs-Nummer,
+        aus einer gelesenen Antwort deren eigene) - beides landet beim selben Thread."""
+        msg = await self.db.get_message(msg_id)
+        if not msg or msg.msg_type != "B":
+            return [f"Bulletin #{msg_id} nicht gefunden."]
+        root_id = await self._thread_root_id(msg)
+        thread = await self.db.get_thread(root_id)
+        if not thread:
+            return [f"Bulletin #{msg_id} nicht gefunden."]
+        root, replies = thread[0], thread[1:]
+        subject = root.subject if len(root.subject) <= 20 else root.subject[:20] + "..."
+        lines = [f"\U0001f4cb Thread #{root.id} {subject}"]
+        # Bei langen Threads die AELTESTEN Antworten weglassen, nicht die neuesten -
+        # der Anfang bleibt als Kontext immer stehen.
+        skipped = max(len(replies) - (self.THREAD_MAX_ROWS - 1), 0)
+        for m in [root] + replies[skipped:]:
+            date = m.created_at.strftime("%d.%m.%y")
+            mark = " (Start)" if m.id == root.id else ""
+            lines.append(f"{m.id:>3} {date:<8} {m.from_call:<9}{mark}")
+            if m.id == root.id and skipped:
+                lines.append(f"... {skipped} aeltere Antworten ausgelassen")
+        lines.append("R<Nr> zum Lesen, SBR<Nr>|Text zum Antworten")
+        return lines
+
+    async def _thread_root_id(self, msg: Message) -> int:
+        """Thread-Anfang zu einer Board-Nachricht. Zeigt thread_id auf eine inzwischen
+        geloeschte Nachricht (Waise), ist die Nachricht selbst wieder der Anfang -
+        dieselbe Regel wie in der Board-Liste (siehe Database._BOARD_ROOT_COND)."""
+        if not msg.thread_id or msg.thread_id == msg.id:
+            return msg.id
+        return msg.id if await self.db.get_message(msg.thread_id) is None else msg.thread_id
 
     async def cmd_list_personal(self, callsign: str, offset: Optional[int] = None) -> list[str]:
         callsign = callsign.upper()
-        # SQL-seitig paginiert: es wird nur die angezeigte Seite geladen und
-        # entschluesselt, nicht das gesamte Postfach.
-        total = await self.db.count_personal_messages(callsign)
+        # SQL-seitig paginiert, gruppiert nach Thread (analog cmd_list_board) - ein
+        # privates Postfach ist gerichtet (to_call), daher hier Postfach-skalierte
+        # Thread-Koepfe statt eines globalen Roots (siehe Database.
+        # list_personal_thread_heads). Quota-Anzeige (count/max) bleibt Zeilen-
+        # basiert, das ist weiterhin der harte Limit-Check in cmd_send.
+        raw_count = await self.db.count_personal_messages(callsign)
+        total = await self.db.count_personal_threads(callsign)
         if offset is None:
-            page = await self.db.list_personal_page(callsign, self.FIRST_PAGE, 0)
+            page = await self.db.list_personal_thread_heads(callsign, self.FIRST_PAGE, 0)
         else:
             start = max(offset - 1, 0)
-            page = await self.db.list_personal_page(callsign, self.PAGE_SIZE, start)
+            page = await self.db.list_personal_thread_heads(callsign, self.PAGE_SIZE, start)
 
         if not page:
             return ["Keine Nachrichten." if offset is None
                     else f"Keine weiteren Nachrichten ab {offset}."]
 
-        lines = [f"✉ Nachrichten {total}/{self.max_personal_messages}" + (f" ab {offset}" if offset else "")]
-        lines.append(f"{'Nr':<4} {'Von':<9} {'Datum':<8} Betreff")
-        for m in page:
-            mark = "*" if not m.read else " "
-            date = m.created_at.strftime("%d.%m.%y")
-            subject = m.subject if len(m.subject) <= 15 else m.subject[:15] + "..."
-            lines.append(f"{m.id:>3}{mark} {m.from_call:<9} {date:<8} {subject}")
+        lines = [f"✉ Nachrichten: {total} Threads ({raw_count}/{self.max_personal_messages})"
+                + (f" ab {offset}" if offset else "")]
+        lines.append(f"{'Nr':<3} {'Von':<9} {'Datum':<8} Betreff")
+        for m, replies, last_activity, unread in page:
+            date = last_activity.strftime("%d.%m.%y")
+            suffix = self._count_suffix(replies + 1, unread)
+            cut = 11 if suffix else 15
+            subject = m.subject if len(m.subject) <= cut else m.subject[:cut] + "..."
+            subject += suffix
+            lines.append(f"{m.id:>3} {m.from_call:<9} {date:<8} {subject}")
+        if any(replies for _, replies, _, _ in page):
+            lines.append("NT<Nr> zeigt den Verlauf")
         if offset is None and total > self.FIRST_PAGE:
             lines.append(f"NL {self.FIRST_PAGE + 1} fuer weitere ({total} gesamt)")
         elif offset is not None and total > start + self.PAGE_SIZE:
             lines.append(f"NL {offset + self.PAGE_SIZE} fuer weitere ({total} gesamt)")
+        return lines
+
+    async def cmd_personal_thread(self, callsign: str, msg_id: int) -> list[str]:
+        """Zeigt den Verlauf einer privaten Thread-Gruppe (eigener Empfang, siehe
+        Database.get_personal_thread) und markiert ihn komplett als gelesen - wie eine
+        Chat-Unterhaltung oeffnen. Zugriffskontrolle wie cmd_read: nur der tatsaechliche
+        Empfaenger, sonst dieselbe 'nicht gefunden'-Maskierung gegen Enumeration."""
+        callsign = callsign.upper()
+        msg = await self.db.get_message(msg_id)
+        if not msg or msg.msg_type != "P" or msg.to_call.upper() != callsign:
+            return [f"Nachricht #{msg_id} nicht gefunden."]
+        root_key = msg.thread_id or msg.id
+        thread = await self.db.get_personal_thread(callsign, root_key)
+        if not thread:
+            return [f"Nachricht #{msg_id} nicht gefunden."]
+        root, replies = thread[0], thread[1:]
+        subject = root.subject if len(root.subject) <= 20 else root.subject[:20] + "..."
+        lines = [f"✉ Verlauf mit {root.from_call} ({subject})"]
+        skipped = max(len(replies) - (self.THREAD_MAX_ROWS - 1), 0)
+        for m in [root] + replies[skipped:]:
+            date = m.created_at.strftime("%d.%m.%y")
+            lines.append(f"{m.id:>3} {date:<8} {m.from_call:<9}")
+            if m.id == root.id and skipped:
+                lines.append(f"... {skipped} aeltere Nachrichten ausgelassen")
+        lines.append("R<Nr> zum Lesen, RS<Nr>|Text zum Antworten")
+        await self.db.mark_thread_read(callsign, root_key)
         return lines
 
     async def cmd_read(self, callsign: str, msg_id: int) -> list[str]:
@@ -266,16 +412,29 @@ class BBSCore:
             if caller not in (msg.to_call.upper(), msg.from_call.upper()):
                 return [f"Nachricht #{msg_id} nicht gefunden."]
         await self.db.mark_read(msg_id)
-        return [
+        lines = [
             f"#{msg.id} [{msg.msg_type}] {msg.created_at.strftime('%d.%m.%y %H:%M')} UTC",
             f"Von: {msg.from_call}  An: {msg.to_call}",
             f"Betreff: {msg.subject}",
-            "---",
-            msg.body,
-            "---",
         ]
+        # Bei Board-Nachrichten den Thread-Bezug sichtbar machen: eine Antwort nennt
+        # ihren Thread-Anfang, ein Thread-Anfang seine Antworten (gedeckelt, damit ein
+        # langer Thread die Ausgabe nicht ueber das Chunk-Budget hinaus aufblaeht).
+        if msg.msg_type == "B":
+            root_id = await self._thread_root_id(msg)
+            if root_id != msg.id:
+                lines.append(f"Antwort auf #{root_id} (BT{root_id} = Thread)")
+            else:
+                reply_ids = await self.db.list_thread_reply_ids(msg.id)
+                if reply_ids:
+                    shown = " ".join(f"#{i}" for i in reply_ids[:5])
+                    more = " ..." if len(reply_ids) > 5 else ""
+                    lines.append(f"{len(reply_ids)} Antworten: {shown}{more}")
+        lines += ["---", msg.body, "---"]
+        return lines
 
-    async def cmd_send(self, from_call: str, to_call: str, subject: str, body: str) -> list[str]:
+    async def cmd_send(self, from_call: str, to_call: str, subject: str, body: str,
+                       thread_id: Optional[int] = None) -> list[str]:
         to_call = to_call.upper()
         count = await self.db.count_personal_messages(to_call)
         if count >= self.max_personal_messages:
@@ -295,6 +454,7 @@ class BBSCore:
             subject=subject,
             body=body,
             created_at=now_utc(),
+            thread_id=thread_id,
         )
         msg_id = await self.db.save_message(msg)
         if not is_registered:
@@ -303,8 +463,11 @@ class BBSCore:
         # Inhalt direkt per Push-DM zustellen statt nur eines Hinweises -- der
         # Empfaenger muss nicht extra NL/R<id> senden, um zu lesen. Bleibt bis zum
         # expliziten R<id> als "ungelesen" markiert (Badge/Loesch-Erinnerung
-        # unveraendert), ist bei Nichterreichbarkeit best-effort (_try_notify).
-        await self._try_notify(
+        # unveraendert), ist bei Nichterreichbarkeit best-effort (_fire_notify).
+        # Nicht abgewartet: der DM-Versand ueber den Node ist seriell und dauert
+        # typischerweise 10-30s (bis zu ~90s) - das darf die Bestaetigung an den
+        # Absender nicht blockieren.
+        self._fire_notify(
             to_call,
             f"\U0001f4e8 Neue Nachricht #{msg_id} von {from_call.upper()}\n"
             f"Betreff: {subject}\n"
@@ -324,9 +487,11 @@ class BBSCore:
         if not msg or msg.msg_type != "P" or callsign.upper() != msg.to_call.upper():
             return [f"Nachricht #{msg_id} nicht gefunden."]
         subject = msg.subject if msg.subject.upper().startswith("RE:") else f"Re: {msg.subject}"
-        return await self.cmd_send(callsign, msg.from_call, subject, body)
+        root_id = await self._thread_root_id(msg)
+        return await self.cmd_send(callsign, msg.from_call, subject, body, thread_id=root_id)
 
-    async def cmd_bulletin(self, from_call: str, topic: str, body: str) -> list[str]:
+    async def cmd_bulletin(self, from_call: str, topic: str, body: str,
+                           thread_id: Optional[int] = None) -> list[str]:
         msg = Message(
             id=None,
             msg_type="B",
@@ -335,20 +500,44 @@ class BBSCore:
             subject=topic,
             body=body,
             created_at=now_utc(),
+            thread_id=thread_id,
         )
         msg_id = await self.db.save_message(msg)
         return [f"Bulletin #{msg_id} gespeichert. 73!"]
 
     async def cmd_bulletin_reply(self, from_call: str, msg_id: int, body: str) -> list[str]:
-        """Antwortet auf ein Board-Bulletin als neues Bulletin (Thema mit 'Re: '-
-        Praefix, nicht doppelt falls schon vorhanden) - Pendant zu cmd_reply fuer
-        Board-Nachrichten. Board-Bulletins sind oeffentlich (per BL sichtbar),
-        daher keine Maskierung wie bei privaten Nachrichten noetig."""
+        """Antwortet auf ein Board-Bulletin (Thema mit 'Re: '-Praefix, nicht doppelt
+        falls schon vorhanden) - Pendant zu cmd_reply fuer Board-Nachrichten. Die
+        Antwort haengt am Thread-Anfang, nicht an der angesprochenen Nachricht: eine
+        Antwort auf eine Antwort landet also im selben Thread statt eine zweite Ebene
+        aufzumachen (auf einem MeshCore-Display ist ein Baum nicht darstellbar) - und
+        das Thema kommt vom Anfang, damit nie 'Re: Re: ...' entsteht.
+        Board-Bulletins sind oeffentlich (per BL sichtbar), daher keine Maskierung
+        wie bei privaten Nachrichten noetig."""
         msg = await self.db.get_message(msg_id)
         if not msg or msg.msg_type != "B":
             return [f"Bulletin #{msg_id} nicht gefunden."]
-        topic = msg.subject if msg.subject.upper().startswith("RE:") else f"Re: {msg.subject}"
-        return await self.cmd_bulletin(from_call, topic, body)
+        root_id = await self._thread_root_id(msg)
+        root = msg if root_id == msg.id else (await self.db.get_message(root_id)) or msg
+        topic = root.subject if root.subject.upper().startswith("RE:") else f"Re: {root.subject}"
+        result = await self.cmd_bulletin(from_call, topic, body, thread_id=root_id)
+        # Push-DM an ALLE bisherigen Thread-Teilnehmer (nicht nur den Autor des
+        # Thread-Anfangs), damit niemand eine Antwort verpasst, der schon mitdiskutiert
+        # hat - bewusster Kompromiss: erhoeht die Sendelast bei Threads mit vielen
+        # Teilnehmern (eine Antwort -> N DMs statt 1), explizit so gewuenscht. Nicht
+        # abgewartet (_fire_notify): der Node-Send ist seriell, mehrere Benachrichtigungen
+        # nacheinander abzuwarten wuerde die Befehlsantwort minutenlang blockieren.
+        replier = from_call.upper()
+        thread = await self.db.get_thread(root_id)
+        participants = {m.from_call.upper() for m in thread} - {replier}
+        for participant in participants:
+            self._fire_notify(
+                participant,
+                f"\U0001f4cb Neue Antwort von {replier} im Thread #{root.id}\n"
+                f"Betreff: {root.subject}\n"
+                f"---\n"
+                f"{body}")
+        return result
 
     def _is_sysop(self, callsign: str) -> bool:
         """True, wenn callsign der primaere SysOp oder einer der konfigurierten
