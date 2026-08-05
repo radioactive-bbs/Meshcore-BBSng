@@ -1219,57 +1219,24 @@ class MeshCoreServer(BaseProtocol):
                      eigene Bulletins, erfordert Bestaetigung durch erneutes Senden)
           MI/MEINEINFO  Meine Info   MC/MAIL mail   REMOVE Abmelden
         """
-        # RS<n>|Text / RS<n> Text / ANTWORT<n>|Text: Nummer und Text sind entweder
-        # per Pipe ODER per Leerzeichen getrennt (Pipe bleibt bevorzugt/dokumentiert,
-        # aber manche Mesh-Client-Tastaturen tippen "|" nur umstaendlich -- ein
-        # simples Leerzeichen wie bei K<n>/ND<n> funktioniert daher gleichwertig).
-        # Der restliche Text darf selbst wieder Leerzeichen (und sogar "|") enthalten
-        # -- der generische Leerzeichen-Split unten wuerde das falsch zerlegen, daher
-        # hier per eigenem Regex VOR dem generischen Parsing behandelt. Reine
-        # Nummer ohne Text (z.B. "RS51" oder "RS 51") matcht das nicht, bekommt aber
-        # ueber m_reply_bare trotzdem einen Format-Hinweis statt "Unbekannt: RS".
-        # ANTWORT ist die deutschsprachige Langform von RS.
-        m_reply = re.match(r'^(?:RS|ANTWORT)\s*(\d+)(?:\s*\|\s*|\s+)(.*)$',
-                           text.strip(), re.IGNORECASE | re.DOTALL)
-        m_reply_bare = None if m_reply else re.match(
-            r'^(?:RS|ANTWORT)\s*(\d+)\s*$', text.strip(), re.IGNORECASE)
-        if m_reply or m_reply_bare:
-            self._create_tracked_task(self.db.log_event("cmd", callsign, "Antworten"))
-            if not self.bbs.feature_enabled("messages"):
-                return [f"Unbekannt: RS  H=Hilfe"]
-            if m_reply_bare:
-                return ["Format: ANTWORT<Nummer>|Text (oder RS<Nummer>|Text bzw. RS<Nummer> Text)"]
-            gate = await self._pubkey_ack_gate(prefix_hex, callsign)
-            if gate:
-                self._pending_send_replay[prefix_hex] = text
-                return gate
-            body = m_reply.group(2).strip()
-            if not body:
-                return ["Format: ANTWORT<Nummer>|Text (oder RS<Nummer>|Text bzw. RS<Nummer> Text)"]
-            return await self.bbs.cmd_reply(callsign, int(m_reply.group(1)), body)
+        # RS<n>|Text / RS<n> Text / ANTWORT<n>|Text (private Antwort) und
+        # SBR<n>|Text / SBR<n> Text / BULLETINANTWORT<n>|Text (Board-Antwort) sind
+        # strukturell identisch (Nummer + Pipe-ODER-Leerzeichen + Freitext) -- beide
+        # Paare laufen daher durch denselben Helper (_dispatch_reply), damit sie nicht
+        # unbemerkt auseinanderlaufen koennen. Muss VOR dem generischen Leerzeichen-
+        # Split unten behandelt werden, da der Freitext selbst wieder Leerzeichen
+        # (und sogar "|") enthalten darf.
+        result = await self._dispatch_reply(
+            text, prefix_hex, callsign, short="RS", long="ANTWORT",
+            feature="messages", log_label="Antworten", action=self.bbs.cmd_reply)
+        if result is not None:
+            return result
 
-        # SBR<n>|Text / SBR<n> Text / BULLETINANTWORT<n>|Text: Antwort auf ein
-        # Board-Bulletin als neues Bulletin (Thema mit "Re: "-Praefix) -- Pendant zu
-        # RS/ANTWORT fuer Board-Nachrichten, gleiche Pipe-ODER-Leerzeichen-Regel wie
-        # dort. BULLETINANTWORT ist die deutschsprachige Langform.
-        m_bulletin_reply = re.match(r'^(?:SBR|BULLETINANTWORT)\s*(\d+)(?:\s*\|\s*|\s+)(.*)$',
-                                    text.strip(), re.IGNORECASE | re.DOTALL)
-        m_bulletin_reply_bare = None if m_bulletin_reply else re.match(
-            r'^(?:SBR|BULLETINANTWORT)\s*(\d+)\s*$', text.strip(), re.IGNORECASE)
-        if m_bulletin_reply or m_bulletin_reply_bare:
-            self._create_tracked_task(self.db.log_event("cmd", callsign, "Bulletin-Antwort"))
-            if not self.bbs.feature_enabled("board"):
-                return [f"Unbekannt: SBR  H=Hilfe"]
-            if m_bulletin_reply_bare:
-                return ["Format: BULLETINANTWORT<Nummer>|Text (oder SBR<Nummer>|Text bzw. SBR<Nummer> Text)"]
-            gate = await self._pubkey_ack_gate(prefix_hex, callsign)
-            if gate:
-                self._pending_send_replay[prefix_hex] = text
-                return gate
-            body = m_bulletin_reply.group(2).strip()
-            if not body:
-                return ["Format: BULLETINANTWORT<Nummer>|Text (oder SBR<Nummer>|Text bzw. SBR<Nummer> Text)"]
-            return await self.bbs.cmd_bulletin_reply(callsign, int(m_bulletin_reply.group(1)), body)
+        result = await self._dispatch_reply(
+            text, prefix_hex, callsign, short="SBR", long="BULLETINANTWORT",
+            feature="board", log_label="Bulletin-Antwort", action=self.bbs.cmd_bulletin_reply)
+        if result is not None:
+            return result
 
         parts = text.strip().split(None, 1)
         if not parts:
@@ -1354,7 +1321,7 @@ class MeshCoreServer(BaseProtocol):
             if not feat("account"):
                 return unknown
             if not arg:
-                return ["Format: MAIL deine@mail.de (oder MC deine@mail.de)"]
+                return ["Format: MAIL name@domain.de (oder MC name@domain.de)"]
             return await self.bbs.cmd_set_mail(callsign, arg)
         if cmd == "L":
             return await self.bbs.cmd_list() if msgs_or_board else unknown
@@ -1368,7 +1335,8 @@ class MeshCoreServer(BaseProtocol):
             if not arg:
                 return await self.bbs.cmd_list_board(callsign)
             if not arg.isdigit():
-                return ["Format: BOARDLISTE <Zahl> (oder BL <Zahl> / BLO <Zahl>)"]
+                return ["Format: BOARDLISTE <Zahl> (oder BL <Zahl> / BLO <Zahl>, "
+                        "Leerzeichen optional: BL5)"]
             return await self.bbs.cmd_list_board(callsign, int(arg))
         if cmd in ("BT", "BOARDTHREAD"):
             # Zeigt einen Board-Thread (Anfang + Antworten). Rein lesend, daher kein
@@ -1376,7 +1344,8 @@ class MeshCoreServer(BaseProtocol):
             if not feat("board"):
                 return unknown
             if not arg.isdigit():
-                return ["Format: BOARDTHREAD <Nummer> (oder BT <Nummer>)"]
+                return ["Format: BOARDTHREAD <Nummer> (oder BT <Nummer>, "
+                        "Leerzeichen optional: BT5)"]
             return await self.bbs.cmd_board_thread(int(arg))
         if cmd in ("NL", "NLO", "NACHRICHTENLISTE"):
             if not feat("messages"):
@@ -1384,7 +1353,8 @@ class MeshCoreServer(BaseProtocol):
             if not arg:
                 return await self.bbs.cmd_list_personal(callsign)
             if not arg.isdigit():
-                return ["Format: NACHRICHTENLISTE <Zahl> (oder NL <Zahl> / NLO <Zahl>)"]
+                return ["Format: NACHRICHTENLISTE <Zahl> (oder NL <Zahl> / NLO <Zahl>, "
+                        "Leerzeichen optional: NL5)"]
             return await self.bbs.cmd_list_personal(callsign, int(arg))
         if cmd in ("NT", "NACHRICHTENTHREAD"):
             # Zeigt den Verlauf einer privaten Thread-Gruppe (eigener Empfang) und
@@ -1393,44 +1363,50 @@ class MeshCoreServer(BaseProtocol):
             if not feat("messages"):
                 return unknown
             if not arg.isdigit():
-                return ["Format: NACHRICHTENTHREAD <Nummer> (oder NT <Nummer>)"]
+                return ["Format: NACHRICHTENTHREAD <Nummer> (oder NT <Nummer>, "
+                        "Leerzeichen optional: NT5)"]
             return await self.bbs.cmd_personal_thread(callsign, int(arg))
         if cmd in ("R", "LESEN"):
             if not msgs_or_board:
                 return unknown
             if not arg.isdigit():
-                return ["Format: LESEN <Nummer> (oder R <Nummer>)"]
+                return ["Format: LESEN <Nummer> (oder R <Nummer>, "
+                        "Leerzeichen optional: R5)"]
             return await self.bbs.cmd_read(callsign, int(arg))
         if cmd in ("S", "SP", "SENDEN"):
             if not feat("messages"):
                 return unknown
-            gate = await self._pubkey_ack_gate(prefix_hex, callsign)
-            if gate:
-                self._pending_send_replay[prefix_hex] = text
-                return gate
+            # Format-Check VOR dem Pubkey-Gate (konsistent mit RS/SBR, siehe
+            # _dispatch_reply): ein Tippfehler im Format soll nicht erst den
+            # Sicherheitshinweis-Dialog aufrufen.
             p = arg.split("|", 2)
             if len(p) < 3:
                 return ["Format: SENDEN CALL|Betr|Text (oder S CALL|Betr|Text; "
                         "Betreff darf kein '|' enthalten)"]
-            return await self.bbs.cmd_send(callsign, p[0].strip(), p[1].strip(), p[2].strip())
-        if cmd in ("SB", "BULLETIN"):
-            if not feat("board"):
-                return unknown
             gate = await self._pubkey_ack_gate(prefix_hex, callsign)
             if gate:
                 self._pending_send_replay[prefix_hex] = text
                 return gate
+            return await self.bbs.cmd_send(callsign, p[0].strip(), p[1].strip(), p[2].strip())
+        if cmd in ("SB", "BULLETIN"):
+            if not feat("board"):
+                return unknown
             p = arg.split("|", 1)
             if len(p) < 2:
                 return ["Format: BULLETIN Thema|Text (oder SB Thema|Text; "
                         "Thema darf kein '|' enthalten)"]
+            gate = await self._pubkey_ack_gate(prefix_hex, callsign)
+            if gate:
+                self._pending_send_replay[prefix_hex] = text
+                return gate
             return await self.bbs.cmd_bulletin(callsign, p[0].strip(), p[1].strip())
         if cmd in ("K", "ND", "LOESCHEN"):
             if not msgs_or_board:
                 return unknown
             if not arg.isdigit():
-                return ["Format: LOESCHEN <Nummer> (oder K/ND <Nummer>) - nur eigene "
-                        "Nachrichten: als Empfaenger erhaltene Nachrichten bzw. eigene Bulletins"]
+                return ["Format: LOESCHEN <Nummer> (oder K/ND <Nummer>, Leerzeichen "
+                        "optional: K5) - nur eigene Nachrichten: als Empfaenger "
+                        "erhaltene Nachrichten bzw. eigene Bulletins"]
             return await self._handle_kill_request(prefix_hex, callsign, int(arg), cmd)
 
         return unknown
@@ -1795,6 +1771,60 @@ class MeshCoreServer(BaseProtocol):
                 sysop_call,
                 f"Neuer User registriert: {username} (Pubkey {pubkey_hex[:12]}...)"))
         return True
+
+    # ------------------------------------------------------------------
+    # Antwort-Befehle: RS/ANTWORT (privat) und SBR/BULLETINANTWORT (Board) teilen
+    # sich dieselbe Grammatik (Nummer + Pipe-ODER-Leerzeichen + Freitext) und
+    # laufen daher durch denselben Helper, siehe _dispatch_reply.
+    # ------------------------------------------------------------------
+
+    async def _dispatch_reply(self, text: str, prefix_hex: str, callsign: str, *,
+                              short: str, long: str, feature: str, log_label: str,
+                              action) -> Optional[list[str]]:
+        """Gemeinsame Parse-/Gate-Logik fuer die beiden Antwort-Befehlspaare (RS/
+        ANTWORT bzw. SBR/BULLETINANTWORT) -- vorher zwei fast wortgleiche ~20-Zeilen-
+        Bloecke im Dispatcher, die schon einmal (SBR wurde als Nachzuegler auf RS
+        aufgesetzt) auseinanderzulaufen drohten. `short`/`long` sind Kurz-/Langform
+        (z.B. "RS"/"ANTWORT"), `feature` der Feature-Flag-Key, `action` die
+        BBSCore-Methode (callsign, msg_id, body) -> list[str].
+
+        Nummer und Text sind per Pipe ODER per Leerzeichen getrennt (Pipe bleibt
+        bevorzugt/dokumentiert, aber manche Mesh-Client-Tastaturen tippen "|" nur
+        umstaendlich). Formatfehler (Nummer ohne Text, egal ob "RS51", "RS 51" oder
+        "RS51|" mit leerem Rest) werden IMMER VOR dem Pubkey-Gate gemeldet -- ein
+        Tippfehler soll nicht erst den Sicherheitshinweis-Dialog aufrufen, das Gate
+        greift nur noch fuer tatsaechlich sendefertige Antworten.
+
+        Gibt None zurueck, wenn `text` gar nicht zu diesem Befehlspaar passt (der
+        Aufrufer versucht dann das naechste Befehlspaar); sonst die fertigen
+        Antwort-Zeilen."""
+        m = re.match(rf'^({short}|{long})\s*(\d+)(?:\s*\|\s*|\s+)(.*)$',
+                     text.strip(), re.IGNORECASE | re.DOTALL)
+        bare = None if m else re.match(rf'^({short}|{long})\s*(\d+)\s*$',
+                                       text.strip(), re.IGNORECASE)
+        if not (m or bare):
+            return None
+
+        self._create_tracked_task(self.db.log_event("cmd", callsign, log_label))
+        if not self.bbs.feature_enabled(feature):
+            # Echot die tatsaechlich getippte Form (RS oder ANTWORT), statt wie
+            # frueher hart "RS" auszugeben -- konsistent mit dem generischen
+            # "Unbekannt: {cmd}"-Fallback weiter unten im Dispatcher.
+            alias = (m or bare).group(1).upper()
+            return [f"Unbekannt: {alias}  H=Hilfe"]
+
+        hint = [f"Format: {long}<Nummer>|Text (oder {short}<Nummer>|Text bzw. {short}<Nummer> Text)"]
+        if bare:
+            return hint
+        body = m.group(3).strip()
+        if not body:
+            return hint
+
+        gate = await self._pubkey_ack_gate(prefix_hex, callsign)
+        if gate:
+            self._pending_send_replay[prefix_hex] = text
+            return gate
+        return await action(callsign, int(m.group(2)), body)
 
     # ------------------------------------------------------------------
     # Pubkey-Sicherheitshinweis: Namen sind faelschbar/duplizierbar, nur der

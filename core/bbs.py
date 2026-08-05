@@ -152,9 +152,9 @@ class BBSCore:
             "\U0001f4cb [N]achrichten[L]iste",
             "\U0001f4d6 R<n> Lesen",
             "\U0001f4d1 [N]achrichten[T]hread <n> (Verlauf, markiert gelesen)",
-            "✉ [S]enden TO|Betr|Text",
+            "✉ [S]enden TO|Betr|Text  RS<n>|Text Antwort",
             "\U0001f5d1 ND<n> Loeschen (nur eigene erhaltene)  \U0001f4e1 H Main",
-            "Auch: NACHRICHTENLISTE, NACHRICHTENTHREAD, LESEN, SENDEN, LOESCHEN",
+            "Auch: NACHRICHTENLISTE, NACHRICHTENTHREAD, LESEN, SENDEN, ANTWORT, LOESCHEN",
         ])]
 
     async def menu_board(self) -> list[str]:
@@ -407,10 +407,9 @@ class BBSCore:
         # Metadaten + Loeschen). Board-Nachrichten ('B') sind oeffentlich. Bewusst die
         # gleiche "nicht gefunden"-Meldung wie bei fehlender ID, damit fremde Postfaecher
         # nicht per R<n>-Enumeration aufgezaehlt werden koennen.
-        if msg.msg_type == "P":
-            caller = callsign.upper()
-            if caller not in (msg.to_call.upper(), msg.from_call.upper()):
-                return [f"Nachricht #{msg_id} nicht gefunden."]
+        caller = callsign.upper()
+        if msg.msg_type == "P" and caller not in (msg.to_call.upper(), msg.from_call.upper()):
+            return [f"Nachricht #{msg_id} nicht gefunden."]
         await self.db.mark_read(msg_id)
         lines = [
             f"#{msg.id} [{msg.msg_type}] {msg.created_at.strftime('%d.%m.%y %H:%M')} UTC",
@@ -430,6 +429,11 @@ class BBSCore:
                     shown = " ".join(f"#{i}" for i in reply_ids[:5])
                     more = " ..." if len(reply_ids) > 5 else ""
                     lines.append(f"{len(reply_ids)} Antworten: {shown}{more}")
+        elif caller == msg.to_call.upper():
+            # Direkter Antwort-Hinweis wie beim Board-Pendant oben -- ohne den gibt es
+            # fuer den haeufigsten Lesepfad (R<n> direkt nach einer Push-Benachrichtigung)
+            # gar keine sichtbare Anleitung zum Antworten, nur ueber den Umweg NT<n>.
+            lines.append(f"RS{msg.id}|Text zum Antworten")
         lines += ["---", msg.body, "---"]
         return lines
 
@@ -472,7 +476,9 @@ class BBSCore:
             f"\U0001f4e8 Neue Nachricht #{msg_id} von {from_call.upper()}\n"
             f"Betreff: {subject}\n"
             f"---\n"
-            f"{body}")
+            f"{body}\n"
+            f"---\n"
+            f"RS{msg_id}|Text zum Antworten")
         return [f"Msg #{msg_id} an {to_call} gespeichert, Zustellung per DM angestossen. 73!"]
 
     async def cmd_reply(self, callsign: str, msg_id: int, body: str) -> list[str]:
@@ -661,6 +667,6 @@ class BBSCore:
         # Steuerzeichen entfernen und Format pruefen – Wert stammt aus dem Mesh.
         mail = sanitize.for_log(mail).strip()
         if not is_valid_email(mail):
-            return ["Ungueltige Mailadresse. Format: MC name@domain.de"]
+            return ["Ungueltige Mailadresse. Format: MAIL name@domain.de (oder MC name@domain.de)"]
         await self.db.set_mc_contact_mail(callsign, mail)
         return [f"Mailkontakt gespeichert:\n{mail}"]

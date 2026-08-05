@@ -48,14 +48,17 @@ Jede Zeile zeigt Kürzel **und** deutsche Langform (in Klammern) — beide funkt
 | `BL` / `BLO <n>` (`BOARDLISTE [<n>]`) | **[B]oard-[L]iste** (ein Eintrag je Thread) / weitere ab `n` | `LU` (`USERLISTE`) | **[L]iste [U]ser** |
 | `R <nr>` (`LESEN <nr>`) | Nachricht/Board-Eintrag lesen | `PING` / `PING <Name>` | Repeaterliste (max. 15) / Traceroute |
 | `S TO\|Betreff\|Text` (`SENDEN`) | **[S]enden** – private Nachricht | `PK` / `PK <Name>` (`PUBKEY`) | **[P]ub[K]ey** – eigener / fremder |
-| `RS<nr>\|Text` (`ANTWORT<nr>\|Text`) | Antwort (Empfänger/Betreff automatisch) | `MI` (`MEINEINFO`) | **[M]eine [I]nfo** |
+| `RS<nr>\|Text` / `RS<nr> Text` (`ANTWORT<nr>\|Text`) | Antwort (Empfänger/Betreff automatisch) | `MI` (`MEINEINFO`) | **[M]eine [I]nfo** |
 | `SB Thema\|Text` (`BULLETIN`) | **[S]enden [B]ulletin** (veröffentlichen) | `MC <mail>` (`MAIL <mail>`) | **[M]ail [C]ontact** setzen |
-| `SBR<nr>\|Text` (`BULLETINANTWORT<nr>\|Text`) | Antwort auf ein Bulletin (hängt am Thread) | `OK <Code>` | Pubkey-Sicherheitshinweis bestätigen |
+| `SBR<nr>\|Text` / `SBR<nr> Text` (`BULLETINANTWORT<nr>\|Text`) | Antwort auf ein Bulletin (hängt am Thread) | `OK <Code>` | Pubkey-Sicherheitshinweis bestätigen |
 | `BT <nr>` (`BOARDTHREAD <nr>`) | **[B]oard-[T]hread** aufklappen (Anfang + Antworten) | `add NAME:PUBKEY` | Registrieren (nur Kanal) |
 | `NT <nr>` (`NACHRICHTENTHREAD <nr>`) | **[N]achrichten[T]hread** – eigener Verlauf, markiert als gelesen | | |
 | `ND <nr>` / `K <nr>` (`LOESCHEN <nr>`) | Nachricht/Bulletin löschen (eigene, **mit Rückfrage**) | `REMOVE` | Abmelden (nur Direktnachricht, **mit Rückfrage**) |
 
-Zahlenargumente bei den **Kürzeln** (`R`, `NLO`, `BLO`, `ND`, `K`, `BL`, `NL`, `BT`, `NT`) auch direkt angehängt: `R5` = `R 5`. Bei den deutschen Langformen (`LESEN`, `LOESCHEN`, `BOARDLISTE`, `NACHRICHTENLISTE`, ...) immer mit Leerzeichen: `LESEN 5`. Details, Berechtigungen und Grenzfälle siehe die Tabellen unten.
+**Syntax-Regeln in Kurzform** (Details siehe die Tabellen unten):
+- **Reine Zahlenbefehle** (`R`, `NLO`, `BLO`, `ND`, `K`, `BL`, `NL`, `BT`, `NT`): Zahl direkt angehängt oder mit Leerzeichen, beides gleichwertig — `R5` = `R 5`. Die deutschen Langformen (`LESEN`, `LOESCHEN`, `BOARDLISTE`, `NACHRICHTENLISTE`, ...) brauchen immer ein Leerzeichen: `LESEN 5`.
+- **Mehrfeld-Sendebefehle** (`S`, `SB`): Felder ausschließlich per `|` getrennt, kein Leerzeichen-Ersatz möglich — Betreff/Thema/Text dürfen selbst Leerzeichen enthalten, nur so bleibt die Trennung eindeutig.
+- **Antwortbefehle** (`RS`/`ANTWORT`, `SBR`/`BULLETINANTWORT`): Zahl und Text per `|` **oder** per Leerzeichen getrennt, beides gleichwertig — `RS5|Text` = `RS5 Text` = `RS 5 Text`. Nur ein Feld nach der Nummer, daher ist Leerzeichen hier (anders als bei `S`/`SB`) eindeutig genug.
 
 Zum Ausdrucken gibt es außerdem eine Kreditkarten-große Steckkarten-Version (Vorder-/Rückseite, zum Ausschneiden und Laminieren): [`docs/cheatsheet.html`](docs/cheatsheet.html) im Browser öffnen und drucken (`Drucken → Tatsächliche Größe`).
 
@@ -78,14 +81,14 @@ Zum Ausdrucken gibt es außerdem eine Kreditkarten-große Steckkarten-Version (V
 | `BL` / `BLO <n>` | `BOARDLISTE [<n>]` | **[B]oard-[L]iste** (Sticky zuerst); **ein Eintrag je Thread** — Zähler `(gesamt)` hinter dem Thema, bei Aktivität seit deinem letzten `BL`-Aufruf `(gesamt/neu)`, z. B. `(5/4)`. Datum = letzte Aktivität, Threads mit frischer Antwort stehen oben. Mit Zahlenargument weitere ab Position `n` (gezählt werden Threads). `BLO` ist ebenso eine weiterhin funktionierende Alt-Form |
 | `BT <nr>` | `BOARDTHREAD <nr>` | **[B]oard-[T]hread** `<nr>` aufklappen: Anfang + alle Antworten mit ihren Nummern, danach mit `R <nr>` lesen. `<nr>` darf der Thread-Anfang **oder** eine seiner Antworten sein |
 | `NT <nr>` | `NACHRICHTENTHREAD <nr>` | **[N]achrichten[T]hread** `<nr>` aufklappen: eigener Verlauf mit einer Person, danach mit `R <nr>` lesen oder `RS<nr>\|Text` antworten. Markiert beim Öffnen alle Nachrichten im Thread als gelesen (wie eine Unterhaltung öffnen) — `R <nr>` einzeln bleibt zusätzlich möglich |
-| `R <nr>` | `LESEN <nr>` | Nachricht/Board-Eintrag `<nr>` lesen |
+| `R <nr>` | `LESEN <nr>` | Nachricht/Board-Eintrag `<nr>` lesen. Bei einer an dich gerichteten privaten Nachricht zeigt die Ausgabe direkt den Antwort-Hinweis `RS<nr>\|Text zum Antworten` |
 | `S TO\|Betreff\|Text` | `SENDEN TO\|Betreff\|Text` | **[S]enden** – private Nachricht. Betreff darf kein `\|` enthalten (wird als Trennzeichen verwendet). Ist `TO` nicht registriert, warnt die Bestätigung explizit statt eine Zustellung vorzutäuschen |
-| `RS<nr>\|Text` | `ANTWORT<nr>\|Text` | Antwort auf empfangene private Nachricht `<nr>` — Empfänger und Betreff (mit „Re: "-Präfix) werden automatisch aus der Original-Nachricht übernommen, nur für den tatsächlichen Empfänger nutzbar. Hängt am selben Thread wie die Originalnachricht (in `NL`/`NT` sichtbar) |
+| `RS<nr>\|Text` / `RS<nr> Text` | `ANTWORT<nr>\|Text` | Antwort auf empfangene private Nachricht `<nr>` — Empfänger und Betreff (mit „Re: "-Präfix) werden automatisch aus der Original-Nachricht übernommen, nur für den tatsächlichen Empfänger nutzbar. Nummer und Text per `\|` **oder** per Leerzeichen getrennt (`RS5\|Text` = `RS5 Text`). Hängt am selben Thread wie die Originalnachricht (in `NL`/`NT` sichtbar) |
 | `SB Thema\|Text` | `BULLETIN Thema\|Text` | **[S]enden [B]ulletin** (Board-Nachricht veröffentlichen). Thema darf kein `\|` enthalten |
-| `SBR<nr>\|Text` | `BULLETINANTWORT<nr>\|Text` | Antwort auf ein Board-Bulletin `<nr>`. Die Antwort hängt am Thread und erscheint in `BL` als Zähler beim Thread-Anfang statt als eigene Zeile; das Thema (mit „Re: "-Präfix) kommt automatisch vom Thread-Anfang. Antwort auf eine Antwort landet im selben Thread — bewusst nur eine Ebene. **Alle bisherigen Teilnehmer** des Threads (nicht nur der Autor des Anfangs) bekommen die Antwort zusätzlich als Direktnachricht |
+| `SBR<nr>\|Text` / `SBR<nr> Text` | `BULLETINANTWORT<nr>\|Text` | Antwort auf ein Board-Bulletin `<nr>`. Nummer und Text per `\|` **oder** per Leerzeichen getrennt, wie bei `RS`. Die Antwort hängt am Thread und erscheint in `BL` als Zähler beim Thread-Anfang statt als eigene Zeile; das Thema (mit „Re: "-Präfix) kommt automatisch vom Thread-Anfang. Antwort auf eine Antwort landet im selben Thread — bewusst nur eine Ebene. **Alle bisherigen Teilnehmer** des Threads (nicht nur der Autor des Anfangs) bekommen die Antwort zusätzlich als Direktnachricht |
 | `ND <nr>` / `K <nr>` | `LOESCHEN <nr>` | Nachricht `<nr>` löschen — bei privaten Nachrichten nur der Empfänger, bei Board-Bulletins nur der Autor, zusätzlich immer der SysOp und die konfigurierten Co-SysOps. **Erfordert Bestätigung:** derselbe Befehl muss innerhalb von 60 Sekunden erneut gesendet werden, sonst wird nur nachgefragt und nichts gelöscht |
 
-Befehle mit Zahlenargument bei den Kürzeln (`R`, `NLO`, `BLO`, `ND`, `K`, `BL`, `NL`, `BT`, `NT`) akzeptieren die Nummer wahlweise mit Leerzeichen (`R 5`) oder direkt angehängt (`R5`). Die deutschen Langformen (`LESEN`, `LOESCHEN`, `BOARDLISTE`, `BOARDTHREAD`, `NACHRICHTENLISTE`, `NACHRICHTENTHREAD`) benötigen immer ein Leerzeichen (`LESEN 5`).
+Befehle mit Zahlenargument bei den Kürzeln (`R`, `NLO`, `BLO`, `ND`, `K`, `BL`, `NL`, `BT`, `NT`) akzeptieren die Nummer wahlweise mit Leerzeichen (`R 5`) oder direkt angehängt (`R5`). Die deutschen Langformen (`LESEN`, `LOESCHEN`, `BOARDLISTE`, `BOARDTHREAD`, `NACHRICHTENLISTE`, `NACHRICHTENTHREAD`) benötigen immer ein Leerzeichen (`LESEN 5`). `RS`/`SBR` (und ihre Langformen) sind ein Sonderfall mit eigener Regel: siehe Syntax-Übersicht oben.
 
 ### Wetter (Home-Assistant-Integration)
 
