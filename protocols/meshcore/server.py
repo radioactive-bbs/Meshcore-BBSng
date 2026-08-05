@@ -21,6 +21,7 @@ from protocols.meshcore.packet import (
     IncomingMessage,
     PUSH_ADVERT,
     PUSH_MSG_WAITING,
+    PUSH_CODE_LOG_DATA,
     PUSH_CODE_TRACE_DATA,
     PUSH_PATH_UPDATED,
     PUSH_SEND_CONFIRMED,
@@ -940,8 +941,15 @@ class MeshCoreServer(BaseProtocol):
                     logger.info("Trace-Antwort tag=%d ohne Pending-Eintrag (Timeout/Retry abgelaufen?)",
                                 trace.tag)
 
+        elif ptype == PUSH_CODE_LOG_DATA:
+            # RF-Mithoerlogs anderer Nodes - laut Companion-Protokoll-Doku bewusst
+            # ignorierbar. Eigener Zweig statt generischer "unbekannt"-Meldung,
+            # da das >95% aller Push-Frames sind (Journal-Rauschen bei INFO-Level).
+            logger.debug("Push-Frame LOG_DATA [%dB] ignoriert", len(payload))
+
         else:
-            # 0x88 = LOG_DATA (RF-Mithoerlogs); unbekannte Push-Typen (>=0x80) sichtbar loggen
+            # Unbekannte Push-Typen (>=0x80) sichtbar loggen, um neue/undokumentierte
+            # Frame-Typen kuenftiger Firmware-Versionen aufzufallen zu lassen.
             if ptype >= 0x80:
                 logger.info("Unbekannter Push-Frame 0x%02X [%dB]: %s",
                             ptype, len(payload), payload[:32].hex())
@@ -1203,49 +1211,64 @@ class MeshCoreServer(BaseProtocol):
                      gelesen markieren
           R<n>/LESEN <n>  Lesen
           S/SP/SENDEN CALL|Betr|Text     SB/BULLETIN Thema|Text
-          RS<n>|Text / ANTWORT<n>|Text  Antwort auf empfangene private Nachricht <n>
-                     (Empfaenger/Betreff automatisch)
-          SBR<n>|Text / BULLETINANTWORT<n>|Text  Antwort auf Board-Bulletin <n>
-                     (haengt am Thread, Thema automatisch)
+          RS<n>|Text / RS<n> Text / ANTWORT<n>|Text  Antwort auf empfangene private
+                     Nachricht <n> (Empfaenger/Betreff automatisch)
+          SBR<n>|Text / SBR<n> Text / BULLETINANTWORT<n>|Text  Antwort auf
+                     Board-Bulletin <n> (haengt am Thread, Thema automatisch)
           K<n>/ND<n>/LOESCHEN <n>  Loeschen (nur eigene: erhaltene Nachrichten bzw.
                      eigene Bulletins, erfordert Bestaetigung durch erneutes Senden)
           MI/MEINEINFO  Meine Info   MC/MAIL mail   REMOVE Abmelden
         """
-        # RS<n>|Text / ANTWORT<n>|Text: Nummer und Pipe-Text haengen direkt
-        # aneinander (wie K<n>/ND<n>), der restliche Text nach dem Pipe darf aber
-        # Leerzeichen enthalten -- der generische Leerzeichen-Split unten wuerde
-        # das falsch zerlegen, daher hier per eigenem Regex VOR dem generischen
-        # Parsing behandelt. ANTWORT ist die deutschsprachige Langform von RS.
-        m_reply = re.match(r'^(?:RS|ANTWORT)(\d+)\|(.*)$', text.strip(), re.IGNORECASE | re.DOTALL)
-        if m_reply:
+        # RS<n>|Text / RS<n> Text / ANTWORT<n>|Text: Nummer und Text sind entweder
+        # per Pipe ODER per Leerzeichen getrennt (Pipe bleibt bevorzugt/dokumentiert,
+        # aber manche Mesh-Client-Tastaturen tippen "|" nur umstaendlich -- ein
+        # simples Leerzeichen wie bei K<n>/ND<n> funktioniert daher gleichwertig).
+        # Der restliche Text darf selbst wieder Leerzeichen (und sogar "|") enthalten
+        # -- der generische Leerzeichen-Split unten wuerde das falsch zerlegen, daher
+        # hier per eigenem Regex VOR dem generischen Parsing behandelt. Reine
+        # Nummer ohne Text (z.B. "RS51" oder "RS 51") matcht das nicht, bekommt aber
+        # ueber m_reply_bare trotzdem einen Format-Hinweis statt "Unbekannt: RS".
+        # ANTWORT ist die deutschsprachige Langform von RS.
+        m_reply = re.match(r'^(?:RS|ANTWORT)\s*(\d+)(?:\s*\|\s*|\s+)(.*)$',
+                           text.strip(), re.IGNORECASE | re.DOTALL)
+        m_reply_bare = None if m_reply else re.match(
+            r'^(?:RS|ANTWORT)\s*(\d+)\s*$', text.strip(), re.IGNORECASE)
+        if m_reply or m_reply_bare:
             self._create_tracked_task(self.db.log_event("cmd", callsign, "Antworten"))
             if not self.bbs.feature_enabled("messages"):
                 return [f"Unbekannt: RS  H=Hilfe"]
+            if m_reply_bare:
+                return ["Format: ANTWORT<Nummer>|Text (oder RS<Nummer>|Text bzw. RS<Nummer> Text)"]
             gate = await self._pubkey_ack_gate(prefix_hex, callsign)
             if gate:
                 self._pending_send_replay[prefix_hex] = text
                 return gate
             body = m_reply.group(2).strip()
             if not body:
-                return ["Format: ANTWORT<Nummer>|Text (oder RS<Nummer>|Text)"]
+                return ["Format: ANTWORT<Nummer>|Text (oder RS<Nummer>|Text bzw. RS<Nummer> Text)"]
             return await self.bbs.cmd_reply(callsign, int(m_reply.group(1)), body)
 
-        # SBR<n>|Text / BULLETINANTWORT<n>|Text: Antwort auf ein Board-Bulletin als
-        # neues Bulletin (Thema mit "Re: "-Praefix) -- Pendant zu RS/ANTWORT fuer
-        # Board-Nachrichten. BULLETINANTWORT ist die deutschsprachige Langform.
-        m_bulletin_reply = re.match(r'^(?:SBR|BULLETINANTWORT)(\d+)\|(.*)$',
+        # SBR<n>|Text / SBR<n> Text / BULLETINANTWORT<n>|Text: Antwort auf ein
+        # Board-Bulletin als neues Bulletin (Thema mit "Re: "-Praefix) -- Pendant zu
+        # RS/ANTWORT fuer Board-Nachrichten, gleiche Pipe-ODER-Leerzeichen-Regel wie
+        # dort. BULLETINANTWORT ist die deutschsprachige Langform.
+        m_bulletin_reply = re.match(r'^(?:SBR|BULLETINANTWORT)\s*(\d+)(?:\s*\|\s*|\s+)(.*)$',
                                     text.strip(), re.IGNORECASE | re.DOTALL)
-        if m_bulletin_reply:
+        m_bulletin_reply_bare = None if m_bulletin_reply else re.match(
+            r'^(?:SBR|BULLETINANTWORT)\s*(\d+)\s*$', text.strip(), re.IGNORECASE)
+        if m_bulletin_reply or m_bulletin_reply_bare:
             self._create_tracked_task(self.db.log_event("cmd", callsign, "Bulletin-Antwort"))
             if not self.bbs.feature_enabled("board"):
                 return [f"Unbekannt: SBR  H=Hilfe"]
+            if m_bulletin_reply_bare:
+                return ["Format: BULLETINANTWORT<Nummer>|Text (oder SBR<Nummer>|Text bzw. SBR<Nummer> Text)"]
             gate = await self._pubkey_ack_gate(prefix_hex, callsign)
             if gate:
                 self._pending_send_replay[prefix_hex] = text
                 return gate
             body = m_bulletin_reply.group(2).strip()
             if not body:
-                return ["Format: BULLETINANTWORT<Nummer>|Text (oder SBR<Nummer>|Text)"]
+                return ["Format: BULLETINANTWORT<Nummer>|Text (oder SBR<Nummer>|Text bzw. SBR<Nummer> Text)"]
             return await self.bbs.cmd_bulletin_reply(callsign, int(m_bulletin_reply.group(1)), body)
 
         parts = text.strip().split(None, 1)

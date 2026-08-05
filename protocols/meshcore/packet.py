@@ -63,6 +63,9 @@ PUSH_ADVERT             = 0x80   # Node-Advertisement empfangen
 PUSH_PATH_UPDATED       = 0x81
 PUSH_SEND_CONFIRMED     = 0x82
 PUSH_MSG_WAITING        = 0x83   # neue Nachricht(en) warten
+PUSH_CODE_LOG_DATA      = 0x88   # RF-Mithoerlogs anderer Nodes - laut Companion-Protokoll-
+                                  # Doku bewusst ignorierbar, macht mit Abstand den groessten
+                                  # Teil aller Push-Frames aus (>95%)
 PUSH_CODE_TRACE_DATA    = 0x89   # Antwort auf CMD_SEND_TRACE_PATH (Traceroute-Ergebnis)
 
 # ---------------------------------------------------------------------------
